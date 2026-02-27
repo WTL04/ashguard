@@ -14,6 +14,8 @@ import { Link, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '@/constants/colors';
+import { signIn } from '@/lib/authService';
+import { friendlyError } from '@/lib/errorUtils';
 
 export default function LoginScreen() {
   const router = useRouter();
@@ -24,12 +26,16 @@ export default function LoginScreen() {
   const [rememberMe, setRememberMe] = useState(false);
   const [emailFocused, setEmailFocused] = useState(false);
   const [passFocused, setPassFocused] = useState(false);
+  const [error, setError] = useState('');
 
-  // ── Temporary: skip auth and go straight to the app ──────────────────────
-  // When Firebase is wired up, replace this with a real signIn() call
-  // and handle errors. For now, any tap on "Log In" goes to the map.
-  const handleLogin = () => {
-    router.replace('/(tabs)/map');
+  const handleLogin = async () => {
+    setError('');
+    try {
+      await signIn(email.trim(), password);
+      router.replace('/(tabs)/map');
+    } catch (e: any) {
+      setError(friendlyError(e.code));
+    }
   };
 
   return (
@@ -51,7 +57,6 @@ export default function LoginScreen() {
           >
             <View style={styles.card}>
 
-              {/* Logo */}
               <View style={styles.logoWrapper}>
                 <View style={styles.logoCircle}>
                   <Ionicons name="shield" size={52} color={Colors.primary} />
@@ -64,7 +69,6 @@ export default function LoginScreen() {
               <Text style={styles.title}>Login</Text>
               <Text style={styles.subtitle}>Enter your email and password to log in</Text>
 
-              {/* Email */}
               <TextInput
                 style={[styles.input, emailFocused && styles.inputFocused]}
                 value={email}
@@ -77,7 +81,6 @@ export default function LoginScreen() {
                 onBlur={() => setEmailFocused(false)}
               />
 
-              {/* Password */}
               <View style={[styles.inputWrapper, passFocused && styles.inputFocused]}>
                 <TextInput
                   style={styles.inputInner}
@@ -101,7 +104,6 @@ export default function LoginScreen() {
                 </TouchableOpacity>
               </View>
 
-              {/* Remember me + Forgot password */}
               <View style={styles.rememberRow}>
                 <TouchableOpacity
                   style={styles.rememberLeft}
@@ -121,7 +123,11 @@ export default function LoginScreen() {
                 </Link>
               </View>
 
-              {/* Log In */}
+              {/* Error message */}
+              {error ? (
+                <Text style={styles.errorText}>{error}</Text>
+              ) : null}
+
               <TouchableOpacity
                 style={styles.primaryBtn}
                 onPress={handleLogin}
@@ -130,7 +136,6 @@ export default function LoginScreen() {
                 <Text style={styles.primaryBtnText}>Log In</Text>
               </TouchableOpacity>
 
-              {/* Sign up link */}
               <View style={styles.footerRow}>
                 <Text style={styles.footerPrompt}>Don't have an account? </Text>
                 <Link href="/(auth)/signup" asChild>
@@ -158,7 +163,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
     paddingVertical: 32,
   },
-
   card: {
     backgroundColor: Colors.bgCard,
     borderRadius: 20,
@@ -170,7 +174,6 @@ const styles = StyleSheet.create({
     shadowRadius: 16,
     elevation: 8,
   },
-
   logoWrapper: { alignItems: 'center', marginBottom: 20 },
   logoCircle: {
     width: 80,
@@ -184,7 +187,6 @@ const styles = StyleSheet.create({
     bottom: 8,
     alignItems: 'center',
   },
-
   title: {
     fontSize: 26,
     fontWeight: '700',
@@ -198,7 +200,6 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginBottom: 24,
   },
-
   input: {
     height: 48,
     backgroundColor: Colors.bgInput,
@@ -230,7 +231,6 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: Colors.textPrimary,
   },
-
   rememberRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -258,7 +258,12 @@ const styles = StyleSheet.create({
   },
   rememberText: { fontSize: 13, color: Colors.textSecondary },
   forgotText: { fontSize: 13, color: Colors.textLink, fontWeight: '500' },
-
+  errorText: {
+    color: '#EF4444',
+    fontSize: 13,
+    textAlign: 'center',
+    marginBottom: 10,
+  },
   primaryBtn: {
     height: 50,
     backgroundColor: '#4B6BFB',
@@ -278,7 +283,6 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     letterSpacing: 0.3,
   },
-
   footerRow: {
     flexDirection: 'row',
     justifyContent: 'center',
