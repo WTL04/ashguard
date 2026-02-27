@@ -14,6 +14,8 @@ import { Link, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '@/constants/colors';
+import { signUp } from '@/lib/authService';
+import { friendlyError } from '@/lib/errorUtils';
 
 interface Fields {
   username: string;
@@ -41,11 +43,11 @@ export default function SignupScreen() {
   });
   const [showPassword, setShowPassword] = useState(false);
   const [focused, setFocused] = useState<FieldKey | null>(null);
+  const [error, setError] = useState('');
 
   const update = (key: FieldKey) => (val: string) =>
     setFields((prev) => ({ ...prev, [key]: val }));
 
-  // Auto-format date → mm/dd/yyyy
   const handleDob = (val: string) => {
     const d = val.replace(/\D/g, '').slice(0, 8);
     let out = d;
@@ -54,7 +56,6 @@ export default function SignupScreen() {
     setFields((prev) => ({ ...prev, dob: out }));
   };
 
-  // Auto-format phone → (XXX) XXX-XXXX
   const handlePhone = (val: string) => {
     const d = val.replace(/\D/g, '').slice(0, 10);
     let out = d;
@@ -64,11 +65,18 @@ export default function SignupScreen() {
     setFields((prev) => ({ ...prev, phone: out }));
   };
 
-  // ── Temporary: skip auth and go straight to the app ──────────────────────
-  // When Firebase is wired up, replace this with signUp() + Firestore profile
-  // creation, and add proper validation error messages.
-  const handleRegister = () => {
-    router.replace('/(tabs)/map');
+  const handleRegister = async () => {
+    setError('');
+    if (!fields.email || !fields.password) {
+      setError('Email and password are required.');
+      return;
+    }
+    try {
+      await signUp(fields.email.trim(), fields.password);
+      router.replace('/(tabs)/map');
+    } catch (e: any) {
+      setError(friendlyError(e.code));
+    }
   };
 
   const inputStyle = (key: FieldKey) => [
@@ -102,7 +110,6 @@ export default function SignupScreen() {
               <Text style={styles.title}>Sign Up</Text>
               <Text style={styles.subtitle}>Create an account to continue!</Text>
 
-              {/* Username */}
               <TextInput
                 style={inputStyle('username')}
                 value={fields.username}
@@ -114,7 +121,6 @@ export default function SignupScreen() {
                 onBlur={() => setFocused(null)}
               />
 
-              {/* First Name */}
               <TextInput
                 style={inputStyle('firstName')}
                 value={fields.firstName}
@@ -126,7 +132,6 @@ export default function SignupScreen() {
                 onBlur={() => setFocused(null)}
               />
 
-              {/* Last Name */}
               <TextInput
                 style={inputStyle('lastName')}
                 value={fields.lastName}
@@ -138,7 +143,6 @@ export default function SignupScreen() {
                 onBlur={() => setFocused(null)}
               />
 
-              {/* Email */}
               <TextInput
                 style={inputStyle('email')}
                 value={fields.email}
@@ -151,7 +155,6 @@ export default function SignupScreen() {
                 onBlur={() => setFocused(null)}
               />
 
-              {/* Date of Birth */}
               <View style={wrapStyle('dob')}>
                 <TextInput
                   style={styles.inputInner}
@@ -166,7 +169,6 @@ export default function SignupScreen() {
                 <Ionicons name="calendar-outline" size={18} color={Colors.textMuted} />
               </View>
 
-              {/* Phone */}
               <View style={wrapStyle('phone')}>
                 <View style={styles.countryCode}>
                   <Text style={styles.flagEmoji}>🇺🇸</Text>
@@ -185,7 +187,6 @@ export default function SignupScreen() {
                 />
               </View>
 
-              {/* Password */}
               <View style={wrapStyle('password')}>
                 <TextInput
                   style={styles.inputInner}
@@ -209,7 +210,11 @@ export default function SignupScreen() {
                 </TouchableOpacity>
               </View>
 
-              {/* Register */}
+              {/* Error message */}
+              {error ? (
+                <Text style={styles.errorText}>{error}</Text>
+              ) : null}
+
               <TouchableOpacity
                 style={styles.primaryBtn}
                 onPress={handleRegister}
@@ -218,7 +223,6 @@ export default function SignupScreen() {
                 <Text style={styles.primaryBtnText}>Register</Text>
               </TouchableOpacity>
 
-              {/* Login link */}
               <View style={styles.footerRow}>
                 <Text style={styles.footerPrompt}>Already have an account? </Text>
                 <Link href="/(auth)/login" asChild>
@@ -246,7 +250,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
     paddingVertical: 32,
   },
-
   card: {
     backgroundColor: Colors.bgCard,
     borderRadius: 20,
@@ -258,7 +261,6 @@ const styles = StyleSheet.create({
     shadowRadius: 16,
     elevation: 8,
   },
-
   title: {
     fontSize: 26,
     fontWeight: '700',
@@ -272,7 +274,6 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginBottom: 20,
   },
-
   input: {
     height: 48,
     backgroundColor: Colors.bgWhite,
@@ -305,7 +306,6 @@ const styles = StyleSheet.create({
     color: Colors.textPrimary,
     height: '100%',
   },
-
   countryCode: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -319,7 +319,12 @@ const styles = StyleSheet.create({
     marginLeft: 4,
     lineHeight: 22,
   },
-
+  errorText: {
+    color: '#EF4444',
+    fontSize: 13,
+    textAlign: 'center',
+    marginBottom: 10,
+  },
   primaryBtn: {
     height: 50,
     backgroundColor: '#4B6BFB',
@@ -340,7 +345,6 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     letterSpacing: 0.3,
   },
-
   footerRow: {
     flexDirection: 'row',
     justifyContent: 'center',

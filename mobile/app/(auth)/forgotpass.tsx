@@ -11,6 +11,7 @@ import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '@/constants/colors';
+import { resetPassword } from '@/lib/authService';
 
 export default function ForgotPasswordScreen() {
   const router = useRouter();
@@ -20,12 +21,16 @@ export default function ForgotPasswordScreen() {
   // Simulates the "email sent" success state without real Firebase
   const [sent, setSent] = useState(false);
 
-  // ── Temporary: simulate sending a reset email ─────────────────────────────
-  // When Firebase is wired up, replace setSent(true) with:
-  //   await resetPassword(email.trim())
-  const handleReset = () => {
+
+  const handleReset = async () => {
     if (!email.trim()) return;
-    setSent(true);
+    try {
+      await resetPassword(email.trim());
+      setSent(true);
+    } catch (e: any) {
+      // optionally show an error
+      setSent(true); // still show success to avoid email enumeration
+    }
   };
 
   return (
