@@ -1,0 +1,12 @@
+# map testing
+folium
+
+# data handling
+pandas
+numpy
+
+# server
+fastapi[standard]
+
+# requests
+httpx
