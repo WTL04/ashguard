@@ -114,6 +114,9 @@ async def call_fire_perimeters():
 
 @app.get("/prescribed_fires")
 async def call_prescribed_fires():
+    """
+    Returns GeoJSON of prescribed fires from Watch Duty
+    """
     params = {
         "where": "1=1",  # SQL-style filter
         "outFields": "*",  # specify which fields to return
