@@ -18,12 +18,21 @@ app = FastAPI()
 Functions to make
 - Get satellite CSV data 
 - Get Current Fire Perimeter Data 
-- Get Official Government announcement data 
+- Get prescribed fires from watchduty data 
+"""
+
+
+"""
+---Server API Endpoints---
 """
 
 
 @app.get("/satellite")
 async def call_satellite_api():
+    """
+    Returns JSON of satellite detected hotspots from 3 satellite sources
+    """
+
     # get your map key here https://firms.modaps.eosdis.nasa.gov/api/area/html
     # or ask will for his
     # export NASA_FIRMS_API_KEY="your map key"
@@ -76,6 +85,56 @@ async def call_satellite_api():
 
     # convert into json format
     return Response(content=df.to_json(orient="records"), media_type="application/json")
+
+
+@app.get("/fire_perimeters")
+async def call_fire_perimeters():
+    """
+    Returns GeoJSON of fire perimeter data from NIFC
+    """
+    params = {
+        "where": "1=1",  # SQL-style filter
+        "outFields": "*",  # specify which fields to return
+        "returnGeometry": "true",
+        "f": "geojson",  # format
+        "outSR": 4326,  # spatial reference WGS84 latitude/longitude (EPSG:4326)
+        "resultRecordCount": 2000,  # page size
+    }
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        url = "https://services3.arcgis.com/T4QMspbfLg3qTGWY/arcgis/rest/services/WFIGS_Interagency_Perimeters_Current/FeatureServer/0/query"
+        r = await client.get(url, params=params)
+
+        # Check for success and parse JSON
+        r.raise_for_status()
+        data = r.json()
+
+    return data
+
+
+@app.get("/prescribed_fires")
+async def call_prescribed_fires():
+    """
+    Returns GeoJSON of prescribed fires from Watch Duty
+    """
+    params = {
+        "where": "1=1",  # SQL-style filter
+        "outFields": "*",  # specify which fields to return
+        "returnGeometry": "true",
+        "f": "geojson",  # format
+        "outSR": 4326,  # spatial reference WGS84 latitude/longitude (EPSG:4326)
+        "resultRecordCount": 2000,  # page size
+    }
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        url = "https://services5.arcgis.com/VNhSlpl1umSknM3q/arcgis/rest/services/Watch_Duty_Prescribed_Fires/FeatureServer/0/query"
+        r = await client.get(url, params=params)
+
+        # Check for success and parse JSON
+        r.raise_for_status()
+        data = r.json()
+
+    return data
 
 
 @app.get("/")
