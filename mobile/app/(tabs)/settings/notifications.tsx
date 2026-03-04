@@ -12,7 +12,7 @@ import { Ionicons } from "@expo/vector-icons";
 import Slider from "@react-native-community/slider";
 import { useRouter } from "expo-router";
 
-const ORANGE = "#F59E0B"; // close to your toggle orange
+const ORANGE = "#F59E0B"; 
 
 function Card({
   children,
