@@ -1,36 +1,60 @@
 from fastapi import FastAPI, Response
 import pandas as pd
+import asyncio
+from contextlib import asynccontextmanager
 from datetime import date
 from io import StringIO
 import os
-import json
 import logging
 
 import httpx
 
+# logs success/failed api calls
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = FastAPI()
+# test cache, replace with REDIS python when finished testing
+app_cache = {}
 
 
 """
-Functions to make
-- Get satellite CSV data 
-- Get Current Fire Perimeter Data 
-- Get prescribed fires from watchduty data 
+--- Helper Functions ---
 """
 
 
-"""
----Server API Endpoints---
-"""
-
-
-@app.get("/satellite")
-async def call_satellite_api():
+def dicts_to_geojson(data_list: list) -> dict:
     """
-    Returns JSON of satellite detected hotspots from 3 satellite sources
+    Converts a list of dictionaries into GeoJSON.
+    """
+    features = []
+
+    for entry in data_list:
+        feature = {
+            "type": "Feature",
+            "geometry": {
+                "type": "Point",
+                "coordinates": [entry["longitude"], entry["latitude"]],
+            },
+            "properties": {
+                "acq_date": entry["acq_date"],
+                "acq_time": entry["acq_time"],
+                "confidence": entry["confidence"],
+                "satellite": entry["satellite"],
+            },
+        }
+        features.append(feature)
+
+    return {"type": "FeatureCollection", "features": features}
+
+
+"""
+--- Asyncronous Background Tasks ---
+"""
+
+
+async def fetch_satellite_api():
+    """
+    Returns discionary of satellite detected hotspots from 3 satellite sources
     """
 
     # get your map key here https://firms.modaps.eosdis.nasa.gov/api/area/html
@@ -76,19 +100,20 @@ async def call_satellite_api():
                     f"Failed to fetch from {satellite}: status {r.status_code}"
                 )
 
-    # return empty json array if API call fails
+    # return empty array if API call fails
     if not df_list:
-        return Response(content=json.dumps([]), media_type="application/json")
+        return []
 
-    # concatinate all satelite dataframes into one
+    # concatinate df_list into one
     df = pd.concat(df_list, ignore_index=True)
 
-    # convert into json format
-    return Response(content=df.to_json(orient="records"), media_type="application/json")
+    # list of dictionaries -> geojson
+    data = df.to_dict(orient="records")
+    geojson = dicts_to_geojson(data)
+    return geojson
 
 
-@app.get("/fire_perimeters")
-async def call_fire_perimeters():
+async def fetch_fire_perimeters():
     """
     Returns GeoJSON of fire perimeter data from NIFC
     """
@@ -107,13 +132,12 @@ async def call_fire_perimeters():
 
         # Check for success and parse JSON
         r.raise_for_status()
-        data = r.json()
+        geojson = r.json()
 
-    return data
+    return geojson
 
 
-@app.get("/prescribed_fires")
-async def call_prescribed_fires():
+async def fetch_prescribed_fires():
     """
     Returns GeoJSON of prescribed fires from Watch Duty
     """
@@ -132,11 +156,71 @@ async def call_prescribed_fires():
 
         # Check for success and parse JSON
         r.raise_for_status()
-        data = r.json()
+        geojson = r.json()
 
-    return data
+    return geojson
+
+
+async def data_ingestion_worker():
+    interval = 60.0  # seconds
+
+    while True:
+        try:
+            # run api calls
+            results = await asyncio.gather(
+                fetch_satellite_api(), fetch_fire_perimeters(), fetch_prescribed_fires()
+            )
+
+            # cache the payload
+            app_cache["latest_fire_data"] = results
+            print("Cache successfully updated.")
+
+            # suspend the task for a set interval before polling again
+            await asyncio.sleep(interval)
+
+        except asyncio.CancelledError:
+            print("Data ingestion worker gracefully shutting down.")
+            break
+
+        except Exception as error:
+            print(f"Ingestion failure: {error}")
+            # TODO: In a production environment, implement exponential backoff here.
+            await asyncio.sleep(10)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Manages the startup and shutdown sequence of the FastAPI application."""
+    # Startup logic: instantiate the background worker
+    ingestion_task = asyncio.create_task(data_ingestion_worker())
+
+    yield  # The FastAPI server handles incoming client requests during this yield
+
+    # Shutdown logic: cancel the worker to prevent memory leaks
+    ingestion_task.cancel()
+    try:
+        await ingestion_task
+    except asyncio.CancelledError:
+        pass
+
+
+"""
+--- Server API Endpoints ---
+"""
+
+app = FastAPI(lifespan=lifespan)
 
 
 @app.get("/")
 def read_root():
     return {"Hello": "World"}
+
+
+# TODO: Switch from calling dictionary cache to REDIS cache
+@app.get("/api/v1/fires")
+async def get_cached_fires():
+    """
+    Client endpoint. Returns data directly from memory in O(1) time,
+    bypassing external network latency entirely.
+    """
+    return app_cache.get("latest_fire_data", [])
