@@ -7,7 +7,11 @@ from io import StringIO
 import os
 import logging
 
+# for requests
 import httpx
+
+# for data compression
+from fastapi.middleware.gzip import GZipMiddleware
 
 # logs success/failed api calls
 logging.basicConfig(level=logging.INFO)
@@ -209,6 +213,7 @@ async def lifespan(app: FastAPI):
 """
 
 app = FastAPI(lifespan=lifespan)
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 
 @app.get("/")
