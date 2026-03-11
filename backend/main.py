@@ -1,23 +1,23 @@
 from fastapi import FastAPI, Response
 import pandas as pd
-import asyncio
 from contextlib import asynccontextmanager
-from datetime import date
 from io import StringIO
 import os
 import logging
+from dotenv import load_dotenv
+from datetime import date
+import json
+import asyncio  # for schedualed worker
+import httpx  # for requests
+from fastapi.middleware.gzip import GZipMiddleware  # for data compression
 
-# for requests
-import httpx
-
-# for data compression
-from fastapi.middleware.gzip import GZipMiddleware
+load_dotenv()
 
 # logs success/failed api calls
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# test cache, replace with REDIS python when finished testing
+# local dictionary cache
 app_cache = {}
 
 
@@ -197,6 +197,7 @@ async def data_ingestion_worker():
             )
 
             # cache the payload
+            # 600 = 10 min time till expiration
             app_cache["latest_fire_data"] = results
             print("Cache successfully updated.")
 
@@ -242,11 +243,18 @@ def read_root():
     return {"Hello": "World"}
 
 
-# TODO: Switch from calling dictionary cache to REDIS cache
 @app.get("/api/v1/fires")
 async def get_cached_fires():
     """
     Client endpoint. Returns data directly from memory in O(1) time,
     bypassing external network latency entirely.
     """
-    return app_cache.get("latest_fire_data", [])
+
+    return app_cache.get("latest_fire_data")
+    # if cached:
+    #     current_time = asyncio.get_event_loop().time()
+    #     if current_time < cached["expires"]:
+    #         return json.loads(cached["data"])  # convert str -> dict
+    # return Response(
+    #     status_code=503, content="Data not yet available, please retry shortly"
+    )

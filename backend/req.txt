@@ -11,5 +11,5 @@ fastapi[standard]
 # requests
 httpx
 
-# cache
-redis[hiredis]
+# environment variables
+python-dotenv
