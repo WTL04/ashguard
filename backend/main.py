@@ -251,10 +251,3 @@ async def get_cached_fires():
     """
 
     return app_cache.get("latest_fire_data")
-    # if cached:
-    #     current_time = asyncio.get_event_loop().time()
-    #     if current_time < cached["expires"]:
-    #         return json.loads(cached["data"])  # convert str -> dict
-    # return Response(
-    #     status_code=503, content="Data not yet available, please retry shortly"
-    )
