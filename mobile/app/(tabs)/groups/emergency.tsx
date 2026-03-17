@@ -147,7 +147,7 @@ export default function EmergencyGroupScreen() {
                   autoFocus
                   style={styles.headerInput}
                   placeholder="Enter group name"
-                  placeholderTextColor="#666"
+                  placeholderTextColor="#667"
                   onBlur={handleFinishEditingName}
                   onSubmitEditing={handleFinishEditingName}
                   returnKeyType="done"
@@ -170,7 +170,11 @@ export default function EmergencyGroupScreen() {
           </View>
 
           <View style={styles.content}>
-            <TouchableOpacity style={styles.card} activeOpacity={0.9}>
+            <TouchableOpacity
+              style={styles.card}
+              activeOpacity={0.9}
+              onPress={() => router.push('/(tabs)/groups/contactmembers')}
+            >
               <View style={styles.cardHeader}>
                 <View style={styles.cardHeaderLeft}>
                   <Ionicons name="people-outline" size={24} color="#fff" />
@@ -185,7 +189,11 @@ export default function EmergencyGroupScreen() {
               </Text>
             </TouchableOpacity>
 
-            <TouchableOpacity style={styles.card} activeOpacity={0.9}>
+            <TouchableOpacity
+              style={styles.card}
+              activeOpacity={0.9}
+              onPress={() => router.push('/(tabs)/groups/locationmeetup')}
+            >
               <View style={styles.cardHeader}>
                 <View style={styles.cardHeaderLeft}>
                   <Ionicons name="location-outline" size={24} color="#fff" />
@@ -280,7 +288,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 14,
-    paddingBottom: 16,
+    paddingBottom: 20,
   },
   backButton: {
     marginRight: 10,
