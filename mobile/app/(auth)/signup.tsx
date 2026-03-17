@@ -73,7 +73,7 @@ export default function SignupScreen() {
     }
     try {
       await signUp(fields.email.trim(), fields.password);
-      router.replace('/(tabs)/map');
+      router.replace('/(tabs)/maplibre');
     } catch (e: any) {
       setError(friendlyError(e.code));
     }

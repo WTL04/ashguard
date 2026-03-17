@@ -13,7 +13,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as Location from 'expo-location';
 import * as MapLibreRN from "@maplibre/maplibre-react-native";
-import { Camera, UserLocation, type CameraRef } from "@maplibre/maplibre-react-native";
+import { Camera, UserLocation, type CameraRef, MarkerView } from "@maplibre/maplibre-react-native";
 const { MapView } = MapLibreRN;
 import { Colors } from '@/constants/colors';
 
