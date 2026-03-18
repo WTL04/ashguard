@@ -90,7 +90,7 @@ export default function AddMembersScreen() {
             contact.imageAvailable && contact.image?.uri
               ? contact.image.uri
               : '',
-          status: DEFAULT_STATUS, // ✅ FIXED
+          status: DEFAULT_STATUS, 
           phoneNumber: contact.phoneNumbers?.[0]?.number ?? '',
         }))
         .sort((a, b) => a.name.localeCompare(b.name));
