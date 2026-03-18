@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -8,22 +8,29 @@ import {
   TextInput,
   Platform,
   KeyboardAvoidingView,
+  ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
+import { doc, getDoc } from 'firebase/firestore';
+import { useAuthState } from 'react-firebase-hooks/auth';
+import { auth, db } from '@/lib/firebaseConfig';
 import { Colors } from '@/constants/colors';
 import {
-  FORUM_THREADS,
-  Comment,
+  ForumThread,
+  ForumComment,
   TYPE_LABEL,
   OFFICIAL_STYLE,
+  subscribeToComments,
+  postComment,
+  formatPostDate,
 } from '@/lib/forumData';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function buildTree(comments: Comment[]): Array<{ comment: Comment; depth: number }> {
-  const result: Array<{ comment: Comment; depth: number }> = [];
+function buildTree(comments: ForumComment[]): Array<{ comment: ForumComment; depth: number }> {
+  const result: Array<{ comment: ForumComment; depth: number }> = [];
   function walk(parentId: string | null, depth: number) {
     comments
       .filter((c) => c.parentId === parentId)
@@ -42,7 +49,7 @@ function Avatar({ username, color, size = 34 }: { username: string; color: strin
   return (
     <View style={{ width: size, height: size, borderRadius: size / 2, backgroundColor: color, alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
       <Text style={{ color: '#FFF', fontWeight: '700', fontSize: size * 0.38 }}>
-        {username[0].toUpperCase()}
+        {(username?.[0] ?? '?').toUpperCase()}
       </Text>
     </View>
   );
@@ -57,7 +64,7 @@ function CommentRow({
   depth,
   onReply,
 }: {
-  comment: Comment;
+  comment: ForumComment;
   depth: number;
   onReply: (id: string, username: string) => void;
 }) {
@@ -75,10 +82,10 @@ function CommentRow({
         </View>
       )}
       <View style={{ flexDirection: 'row', gap: 12 }}>
-        <Avatar username={comment.username} color={comment.avatarColor} size={avatarSize} />
+        <Avatar username={comment.authorUsername} color={comment.avatarColor} size={avatarSize} />
         <View style={{ flex: 1 }}>
           <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', marginBottom: 2 }}>
-            <Text style={styles.commentUsername}>{comment.username}</Text>
+            <Text style={styles.commentUsername}>{comment.authorUsername}</Text>
             <Text style={styles.commentDot}> · </Text>
             <Text style={styles.commentTime}>{comment.timeAgo}</Text>
           </View>
@@ -92,11 +99,7 @@ function CommentRow({
               <Ionicons name={liked ? 'heart' : 'heart-outline'} size={14} color={liked ? '#EF4444' : '#9CA3AF'} />
               {likeCount > 0 && <Text style={[styles.likeCount, liked && { color: '#EF4444' }]}>{likeCount}</Text>}
             </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.replyBtn}
-              onPress={() => onReply(comment.id, comment.username)}
-              activeOpacity={0.7}
-            >
+            <TouchableOpacity style={styles.replyBtn} onPress={() => onReply(comment.id, comment.authorUsername)} activeOpacity={0.7}>
               <Ionicons name="chatbubble-outline" size={12} color={Colors.primary} />
               <Text style={styles.replyBtnText}>Reply</Text>
             </TouchableOpacity>
@@ -112,33 +115,53 @@ function CommentRow({
 export default function ThreadDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
+  const [user] = useAuthState(auth);
 
-  const threadData = FORUM_THREADS.find((t) => t.id === id) ?? null;
-  const isOfficial = threadData?.type === 'official';
-
-  const [comments, setComments] = useState<Comment[]>(threadData?.comments ?? []);
+  const [thread, setThread] = useState<ForumThread | null>(null);
+  const [loadingThread, setLoadingThread] = useState(true);
+  const [comments, setComments] = useState<ForumComment[]>([]);
   const [commentText, setCommentText] = useState('');
   const [replyingToId, setReplyingToId] = useState<string | null>(null);
   const [replyingToName, setReplyingToName] = useState<string | null>(null);
+  const [posting, setPosting] = useState(false);
 
-  if (!threadData) {
-    return (
-      <SafeAreaView style={styles.root} edges={['top']}>
-        <View style={styles.notFound}>
-          <Ionicons name="alert-circle-outline" size={40} color="#D1D5DB" />
-          <Text style={styles.notFoundText}>Thread not found</Text>
-          <TouchableOpacity onPress={() => router.back()}>
-            <Text style={styles.backLinkText}>Go back</Text>
-          </TouchableOpacity>
-        </View>
-      </SafeAreaView>
-    );
-  }
+  // Fetch thread doc once
+  useEffect(() => {
+    if (!id) return;
+    getDoc(doc(db, 'threads', id)).then((snap) => {
+      if (snap.exists()) {
+        const data = snap.data();
+        const ts = data.createdAt ?? null;
+        setThread({
+          id: snap.id,
+          type: data.type ?? 'wildfire',
+          distance: data.distance ?? '—',
+          title: data.title,
+          pinned: data.pinned ?? false,
+          authorId: data.authorId ?? '',
+          authorUsername: data.authorUsername ?? 'Anonymous',
+          authorDate: formatPostDate(ts),
+          body: data.body ?? '',
+          tags: data.tags ?? [],
+          createdAt: ts,
+        });
+      }
+      setLoadingThread(false);
+    });
+  }, [id]);
+
+  // Live comments subscription
+  useEffect(() => {
+    if (!id) return;
+    const unsub = subscribeToComments(id, setComments);
+    return unsub;
+  }, [id]);
 
   const tree = buildTree(comments);
+  const isOfficial = thread?.type === 'official';
 
-  const handleReply = (id: string, username: string) => {
-    setReplyingToId(id);
+  const handleReply = (cId: string, username: string) => {
+    setReplyingToId(cId);
     setReplyingToName(username);
     setCommentText(`@${username} `);
   };
@@ -149,21 +172,50 @@ export default function ThreadDetailScreen() {
     setCommentText('');
   };
 
-  const handlePost = () => {
+  const handlePost = async () => {
     const trimmed = commentText.trim();
-    if (!trimmed) return;
-    setComments((prev) => [...prev, {
-      id: `${Date.now()}`,
-      parentId: replyingToId,
-      username: 'You',
-      timeAgo: 'just now',
-      text: trimmed,
-      avatarColor: Colors.primary,
-    }]);
-    setCommentText('');
-    setReplyingToId(null);
-    setReplyingToName(null);
+    if (!trimmed || posting || !id) return;
+    setPosting(true);
+    try {
+      await postComment({
+        threadId: id,
+        parentId: replyingToId,
+        authorId: user?.uid ?? 'anonymous',
+        authorUsername: user?.displayName ?? user?.email ?? 'Anonymous',
+        avatarColor: Colors.primary,
+        text: trimmed,
+      });
+      setCommentText('');
+      setReplyingToId(null);
+      setReplyingToName(null);
+    } finally {
+      setPosting(false);
+    }
   };
+
+  if (loadingThread) {
+    return (
+      <SafeAreaView style={styles.root} edges={['top']}>
+        <View style={styles.centered}>
+          <ActivityIndicator size="large" color={Colors.primary} />
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  if (!thread) {
+    return (
+      <SafeAreaView style={styles.root} edges={['top']}>
+        <View style={styles.centered}>
+          <Ionicons name="alert-circle-outline" size={40} color="#D1D5DB" />
+          <Text style={styles.notFoundText}>Thread not found</Text>
+          <TouchableOpacity onPress={() => router.back()}>
+            <Text style={styles.backLinkText}>Go back</Text>
+          </TouchableOpacity>
+        </View>
+      </SafeAreaView>
+    );
+  }
 
   return (
     <SafeAreaView style={styles.root} edges={['top', 'bottom']}>
@@ -180,9 +232,8 @@ export default function ThreadDetailScreen() {
 
         <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
 
-          {/* ── Thread card ── */}
+          {/* Thread card */}
           <View style={[styles.card, isOfficial && styles.cardOfficial]}>
-            {/* Header */}
             <View style={[styles.cardHeader, isOfficial && styles.cardHeaderOfficial]}>
               {isOfficial ? (
                 <View style={styles.officialHeaderInner}>
@@ -191,35 +242,36 @@ export default function ThreadDetailScreen() {
                 </View>
               ) : (
                 <>
-                  <Text style={styles.cardHeaderType}>{TYPE_LABEL[threadData.type]}</Text>
-                  <Text style={styles.cardHeaderDistance}>Distance: {threadData.distance}</Text>
+                  <Text style={styles.cardHeaderType}>{TYPE_LABEL[thread.type]}</Text>
+                  <Text style={styles.cardHeaderDistance}>Distance: {thread.distance}</Text>
                 </>
               )}
             </View>
-
-            {/* Body */}
             <View style={styles.cardBody}>
               {isOfficial && (
                 <View style={styles.officialTagPill}>
                   <Text style={styles.officialTagText}>OFFICIAL</Text>
                 </View>
               )}
-              {isOfficial && threadData.title && (
-                <Text style={styles.threadTitle}>{threadData.title}</Text>
+              {isOfficial && thread.title && (
+                <Text style={styles.threadTitle}>{thread.title}</Text>
+              )}
+              {!isOfficial && thread.title && (
+                <Text style={styles.threadTitleRegular}>{thread.title}</Text>
               )}
               <View style={styles.authorRow}>
-                <Avatar username={threadData.authorUsername} color={isOfficial ? OFFICIAL_STYLE.tagColor : '#6B7280'} size={40} />
+                <Avatar username={thread.authorUsername} color={isOfficial ? OFFICIAL_STYLE.tagColor : '#6B7280'} size={40} />
                 <View>
-                  <Text style={styles.authorName}>{threadData.authorUsername}</Text>
-                  <Text style={styles.authorDate}>{threadData.authorDate}</Text>
+                  <Text style={styles.authorName}>{thread.authorUsername}</Text>
+                  <Text style={styles.authorDate}>{thread.authorDate}</Text>
                 </View>
               </View>
-              <Text style={[styles.fireBody, isOfficial && styles.fireBodyOfficial]}>{threadData.body}</Text>
-              {!isOfficial && threadData.tags.length > 0 && (
+              <Text style={[styles.fireBody, isOfficial && styles.fireBodyOfficial]}>{thread.body}</Text>
+              {!isOfficial && thread.tags.length > 0 && (
                 <View style={styles.tagsRow}>
-                  {threadData.tags.map((tag) => (
-                    <View key={tag.id} style={styles.tagPill}>
-                      <Text style={styles.tagText}>{tag.label}</Text>
+                  {thread.tags.map((label, i) => (
+                    <View key={i} style={styles.tagPill}>
+                      <Text style={styles.tagText}>{label}</Text>
                     </View>
                   ))}
                 </View>
@@ -227,14 +279,14 @@ export default function ThreadDetailScreen() {
             </View>
           </View>
 
-          {/* ── Replies divider ── */}
+          {/* Replies divider */}
           <View style={styles.dividerRow}>
             <View style={styles.dividerLine} />
             <Text style={styles.dividerLabel}>{comments.length} {comments.length === 1 ? 'reply' : 'replies'}</Text>
             <View style={styles.dividerLine} />
           </View>
 
-          {/* ── Comments ── */}
+          {/* Comments */}
           <View style={styles.commentsContainer}>
             {tree.length === 0 ? (
               <Text style={styles.noComments}>No replies yet. Be the first!</Text>
@@ -277,14 +329,16 @@ export default function ThreadDetailScreen() {
               blurOnSubmit={false}
             />
           </View>
-          {/* Orange circle arrow send button */}
           <TouchableOpacity
-            style={[styles.sendBtn, !commentText.trim() && { opacity: 0.4 }]}
+            style={[styles.sendBtn, (!commentText.trim() || posting) && { opacity: 0.4 }]}
             onPress={handlePost}
-            disabled={!commentText.trim()}
+            disabled={!commentText.trim() || posting}
             activeOpacity={0.8}
           >
-            <Ionicons name="chevron-forward" size={20} color="#FFFFFF" />
+            {posting
+              ? <ActivityIndicator size="small" color="#FFF" />
+              : <Ionicons name="chevron-forward" size={20} color="#FFFFFF" />
+            }
           </TouchableOpacity>
         </View>
       </KeyboardAvoidingView>
@@ -296,15 +350,12 @@ export default function ThreadDetailScreen() {
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: '#F5F5F5' },
-
-  // Page header
+  centered: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12 },
   pageHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 12, backgroundColor: '#F5F5F5' },
   backBtn: { width: 34, height: 34, alignItems: 'center', justifyContent: 'center' },
   pageTitle: { fontSize: 24, fontWeight: '800', color: Colors.primary, letterSpacing: -0.5 },
-
   scrollContent: { paddingHorizontal: 16, paddingBottom: 8 },
 
-  // Card
   card: { backgroundColor: '#FDFAF7', borderRadius: 12, overflow: 'hidden', borderWidth: 1, borderColor: '#E5E7EB', marginBottom: 4, shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 6, shadowOffset: { width: 0, height: 2 }, elevation: 2 },
   cardOfficial: { borderColor: OFFICIAL_STYLE.border, borderWidth: 1.5, backgroundColor: OFFICIAL_STYLE.bg },
   cardHeader: { backgroundColor: Colors.primary, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 14, paddingVertical: 10 },
@@ -313,11 +364,11 @@ const styles = StyleSheet.create({
   pinnedLabel: { fontSize: 11, fontWeight: '700', color: OFFICIAL_STYLE.tagColor, letterSpacing: 0.8 },
   cardHeaderType: { fontSize: 14, fontWeight: '700', color: '#FFFFFF' },
   cardHeaderDistance: { fontSize: 12, fontWeight: '500', color: '#FFFFFF', opacity: 0.92 },
-
   cardBody: { padding: 16 },
   officialTagPill: { alignSelf: 'flex-start', backgroundColor: OFFICIAL_STYLE.tagBg, borderRadius: 6, paddingHorizontal: 8, paddingVertical: 3, marginBottom: 10 },
   officialTagText: { fontSize: 11, fontWeight: '700', color: OFFICIAL_STYLE.tagColor, letterSpacing: 0.5 },
   threadTitle: { fontSize: 20, fontWeight: '700', color: '#111827', lineHeight: 27, marginBottom: 14, letterSpacing: -0.4 },
+  threadTitleRegular: { fontSize: 17, fontWeight: '700', color: '#111827', lineHeight: 24, marginBottom: 10 },
   authorRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 12 },
   authorName: { fontSize: 14, fontWeight: '600', color: '#374151' },
   authorDate: { fontSize: 12, color: '#9CA3AF', marginTop: 1 },
@@ -327,16 +378,14 @@ const styles = StyleSheet.create({
   tagPill: { borderWidth: 1, borderColor: '#D1D5DB', borderRadius: 6, paddingHorizontal: 12, paddingVertical: 5, backgroundColor: '#FFFFFF' },
   tagText: { fontSize: 13, color: '#374151', fontWeight: '500' },
 
-  // Replies divider
   dividerRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 14 },
   dividerLine: { flex: 1, height: 1, backgroundColor: '#E5E7EB' },
   dividerLabel: { fontSize: 13, color: '#9CA3AF', fontWeight: '500' },
 
-  // Comments
   commentsContainer: { backgroundColor: '#FFFFFF', borderRadius: 12, borderWidth: 1, borderColor: '#E5E7EB', overflow: 'hidden' },
   commentWrap: { paddingRight: 16, paddingVertical: 12, backgroundColor: '#FFFFFF' },
   commentWrapOfficial: { backgroundColor: '#FFFBEB' },
-  officialCommentBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: 6 },
+  officialCommentBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: 6, paddingLeft: 16 },
   officialCommentBadgeText: { fontSize: 10, fontWeight: '700', color: OFFICIAL_STYLE.tagColor, letterSpacing: 0.5 },
   commentUsername: { fontSize: 13, fontWeight: '600', color: '#111827' },
   commentDot: { fontSize: 13, color: '#9CA3AF' },
@@ -350,18 +399,14 @@ const styles = StyleSheet.create({
   commentDivider: { height: 1, backgroundColor: '#F3F4F6', marginLeft: 16 },
   noComments: { fontSize: 13, color: '#9CA3AF', textAlign: 'center', paddingVertical: 20 },
 
-  // Replying-to bar
   replyingToBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#FFF7ED', paddingHorizontal: 16, paddingVertical: 8, borderTopWidth: 1, borderTopColor: '#FDE68A' },
   replyingToText: { fontSize: 12, color: '#92400E' },
 
-  // Input bar
   inputBar: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 16, paddingTop: 10, paddingBottom: Platform.OS === 'ios' ? 24 : 14, backgroundColor: '#FFFFFF', borderTopWidth: 1, borderTopColor: '#E5E7EB' },
   inputWrap: { flex: 1, backgroundColor: '#F3F4F6', borderRadius: 22, paddingHorizontal: 16, paddingVertical: Platform.OS === 'ios' ? 10 : 8 },
   textInput: { fontSize: 14, color: '#374151', padding: 0 },
-  sendBtn: { width: 42, height: 42, borderRadius: 21, backgroundColor: Colors.primary, alignItems: 'center', justifyContent: 'center', flexShrink: 0, shadowColor: Colors.primary, shadowOpacity: 0.3, shadowRadius: 6, shadowOffset: { width: 0, height: 2 }, elevation: 4 },
+  sendBtn: { width: 42, height: 42, borderRadius: 21, backgroundColor: Colors.primary, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
 
-  // Not found
-  notFound: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12 },
   notFoundText: { fontSize: 16, color: '#9CA3AF' },
   backLinkText: { fontSize: 14, color: Colors.primary, fontWeight: '600' },
 });

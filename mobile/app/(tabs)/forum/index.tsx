@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -7,23 +7,29 @@ import {
   TouchableOpacity,
   TextInput,
   Platform,
+  ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
+import { useAuthState } from 'react-firebase-hooks/auth';
+import { auth } from '@/lib/firebaseConfig';
 import { Colors } from '@/constants/colors';
 import {
-  FORUM_THREADS,
   ForumThread,
-  Comment,
+  ForumComment,
   TYPE_LABEL,
   OFFICIAL_STYLE,
+  subscribeToThreads,
+  subscribeToComments,
+  postComment,
+  dateGroupLabel,
 } from '@/lib/forumData';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function buildTree(comments: Comment[]): Array<{ comment: Comment; depth: number }> {
-  const result: Array<{ comment: Comment; depth: number }> = [];
+function buildTree(comments: ForumComment[]): Array<{ comment: ForumComment; depth: number }> {
+  const result: Array<{ comment: ForumComment; depth: number }> = [];
   function walk(parentId: string | null, depth: number) {
     comments
       .filter((c) => c.parentId === parentId)
@@ -42,7 +48,7 @@ function Avatar({ username, color, size = 34 }: { username: string; color: strin
   return (
     <View style={{ width: size, height: size, borderRadius: size / 2, backgroundColor: color, alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
       <Text style={{ color: '#FFF', fontWeight: '700', fontSize: size * 0.38 }}>
-        {username[0].toUpperCase()}
+        {(username?.[0] ?? '?').toUpperCase()}
       </Text>
     </View>
   );
@@ -52,20 +58,32 @@ function Avatar({ username, color, size = 34 }: { username: string; color: strin
 
 const INDENT = 24;
 
-function CommentRow({ comment, depth, onReply }: { comment: Comment; depth: number; onReply: (id: string, username: string) => void }) {
+function CommentRow({
+  comment,
+  depth,
+  onReply,
+}: {
+  comment: ForumComment;
+  depth: number;
+  onReply: (id: string, username: string) => void;
+}) {
   const avatarSize = depth === 0 ? 34 : 28;
   return (
     <View style={{ paddingLeft: depth * INDENT + 14, paddingRight: 14, paddingVertical: 8 }}>
       <View style={{ flexDirection: 'row', gap: 10 }}>
-        <Avatar username={comment.username} color={comment.avatarColor} size={avatarSize} />
+        <Avatar username={comment.authorUsername} color={comment.avatarColor} size={avatarSize} />
         <View style={{ flex: 1 }}>
           <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', marginBottom: 2 }}>
-            <Text style={styles.commentUsername}>{comment.username}</Text>
+            <Text style={styles.commentUsername}>{comment.authorUsername}</Text>
             <Text style={styles.commentDot}> · </Text>
             <Text style={styles.commentTime}>{comment.timeAgo}</Text>
           </View>
           <Text style={styles.commentText}>{comment.text}</Text>
-          <TouchableOpacity style={styles.replyBtn} onPress={() => onReply(comment.id, comment.username)} activeOpacity={0.7}>
+          <TouchableOpacity
+            style={styles.replyBtn}
+            onPress={() => onReply(comment.id, comment.authorUsername)}
+            activeOpacity={0.7}
+          >
             <Ionicons name="chatbubble-outline" size={12} color={Colors.primary} />
             <Text style={styles.replyBtnText}>Reply</Text>
           </TouchableOpacity>
@@ -77,14 +95,31 @@ function CommentRow({ comment, depth, onReply }: { comment: Comment; depth: numb
 
 // ── Thread card ───────────────────────────────────────────────────────────────
 
-function ThreadCard({ thread, onPress }: { thread: ForumThread; onPress: () => void }) {
+function ThreadCard({
+  thread,
+  currentUser,
+  onPress,
+}: {
+  thread: ForumThread;
+  currentUser: { uid: string; displayName: string | null; email: string | null } | null;
+  onPress: () => void;
+}) {
   const [expanded, setExpanded] = useState(false);
-  const [comments, setComments] = useState<Comment[]>(thread.comments);
+  const [comments, setComments] = useState<ForumComment[]>([]);
   const [commentText, setCommentText] = useState('');
   const [replyingToId, setReplyingToId] = useState<string | null>(null);
   const [replyingToName, setReplyingToName] = useState<string | null>(null);
+  const [posting, setPosting] = useState(false);
 
   const isOfficial = thread.type === 'official';
+
+  // Subscribe to comments only when expanded
+  useEffect(() => {
+    if (!expanded) return;
+    const unsub = subscribeToComments(thread.id, setComments);
+    return unsub;
+  }, [expanded, thread.id]);
+
   const tree = buildTree(comments);
 
   const handleReply = (id: string, username: string) => {
@@ -94,26 +129,31 @@ function ThreadCard({ thread, onPress }: { thread: ForumThread; onPress: () => v
     setExpanded(true);
   };
 
-  const handlePost = () => {
+  const handlePost = async () => {
     const trimmed = commentText.trim();
-    if (!trimmed) return;
-    setComments((prev) => [...prev, {
-      id: `${Date.now()}`,
-      parentId: replyingToId,
-      username: 'You',
-      timeAgo: 'just now',
-      text: trimmed,
-      avatarColor: Colors.primary,
-    }]);
-    setCommentText('');
-    setReplyingToId(null);
-    setReplyingToName(null);
-    setExpanded(true);
+    if (!trimmed || posting) return;
+    setPosting(true);
+    try {
+      await postComment({
+        threadId: thread.id,
+        parentId: replyingToId,
+        authorId: currentUser?.uid ?? 'anonymous',
+        authorUsername: currentUser?.displayName ?? currentUser?.email ?? 'Anonymous',
+        avatarColor: Colors.primary,
+        text: trimmed,
+      });
+      setCommentText('');
+      setReplyingToId(null);
+      setReplyingToName(null);
+      setExpanded(true);
+    } finally {
+      setPosting(false);
+    }
   };
 
   return (
     <View style={[styles.card, isOfficial && styles.cardOfficial]}>
-      {/* Header bar — official uses amber, others use orange */}
+      {/* Header */}
       <TouchableOpacity
         style={[styles.cardHeader, isOfficial && styles.cardHeaderOfficial]}
         onPress={onPress}
@@ -132,37 +172,33 @@ function ThreadCard({ thread, onPress }: { thread: ForumThread; onPress: () => v
         )}
       </TouchableOpacity>
 
-      {/* Card body */}
+      {/* Body */}
       <TouchableOpacity style={styles.cardBody} onPress={onPress} activeOpacity={0.88}>
-        {/* Official tag pill */}
         {isOfficial && (
           <View style={styles.officialTagPill}>
             <Text style={styles.officialTagText}>OFFICIAL</Text>
           </View>
         )}
-
-        {/* Title (official posts) */}
         {isOfficial && thread.title && (
           <Text style={styles.threadTitle}>{thread.title}</Text>
         )}
-
-        {/* Author row */}
         <View style={styles.authorRow}>
-          <Avatar username={thread.authorUsername} color={isOfficial ? OFFICIAL_STYLE.tagColor : '#6B7280'} size={36} />
+          <Avatar
+            username={thread.authorUsername}
+            color={isOfficial ? OFFICIAL_STYLE.tagColor : '#6B7280'}
+            size={36}
+          />
           <View>
             <Text style={styles.authorName}>{thread.authorUsername}</Text>
             <Text style={styles.authorDate}>{thread.authorDate}</Text>
           </View>
         </View>
-
         <Text style={[styles.fireBody, isOfficial && styles.fireBodyOfficial]}>{thread.body}</Text>
-
-        {/* Tags */}
         {!isOfficial && thread.tags.length > 0 && (
           <View style={styles.tagsRow}>
-            {thread.tags.map((tag) => (
-              <View key={tag.id} style={styles.tagPill}>
-                <Text style={styles.tagText}>{tag.label}</Text>
+            {thread.tags.map((label, i) => (
+              <View key={i} style={styles.tagPill}>
+                <Text style={styles.tagText}>{label}</Text>
               </View>
             ))}
           </View>
@@ -175,13 +211,16 @@ function ThreadCard({ thread, onPress }: { thread: ForumThread; onPress: () => v
           <Text style={styles.replyingToText}>
             Replying to <Text style={{ fontWeight: '700' }}>@{replyingToName}</Text>
           </Text>
-          <TouchableOpacity onPress={() => { setReplyingToId(null); setReplyingToName(null); setCommentText(''); }} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+          <TouchableOpacity
+            onPress={() => { setReplyingToId(null); setReplyingToName(null); setCommentText(''); }}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          >
             <Ionicons name="close" size={14} color="#6B7280" />
           </TouchableOpacity>
         </View>
       )}
 
-      {/* Comment input row */}
+      {/* Comment input */}
       <View style={styles.commentInputRow}>
         <TextInput
           style={styles.commentInput}
@@ -193,21 +232,27 @@ function ThreadCard({ thread, onPress }: { thread: ForumThread; onPress: () => v
           returnKeyType="send"
           blurOnSubmit={false}
         />
-        {/* Orange arrow send button */}
         <TouchableOpacity
-          style={[styles.sendBtn, !commentText.trim() && { opacity: 0.4 }]}
+          style={[styles.sendBtn, (!commentText.trim() || posting) && { opacity: 0.4 }]}
           onPress={handlePost}
-          disabled={!commentText.trim()}
+          disabled={!commentText.trim() || posting}
           activeOpacity={0.8}
         >
-          <Ionicons name="chevron-forward" size={18} color="#FFFFFF" />
+          {posting
+            ? <ActivityIndicator size="small" color="#FFF" />
+            : <Ionicons name="chevron-forward" size={18} color="#FFFFFF" />
+          }
         </TouchableOpacity>
-        <TouchableOpacity style={styles.chevronBtn} onPress={() => setExpanded((e) => !e)} activeOpacity={0.7}>
+        <TouchableOpacity
+          style={styles.chevronBtn}
+          onPress={() => setExpanded((e) => !e)}
+          activeOpacity={0.7}
+        >
           <Ionicons name={expanded ? 'chevron-up' : 'chevron-down'} size={18} color="#6B7280" />
         </TouchableOpacity>
       </View>
 
-      {/* Expanded threaded comments */}
+      {/* Expanded comments */}
       {expanded && (
         <View style={styles.commentsSection}>
           {tree.length === 0 ? (
@@ -230,32 +275,70 @@ function ThreadCard({ thread, onPress }: { thread: ForumThread; onPress: () => v
 
 export default function ForumScreen() {
   const router = useRouter();
-  const [threads] = useState<ForumThread[]>(FORUM_THREADS);
+  const [user] = useAuthState(auth);
+  const [threads, setThreads] = useState<ForumThread[]>([]);
+  const [loading, setLoading] = useState(true);
 
+  useEffect(() => {
+    const unsub = subscribeToThreads((data) => {
+      setThreads(data);
+      setLoading(false);
+    });
+    return unsub;
+  }, []);
+
+  // Group by date label, preserving order (newest first = today at top)
   const groupOrder: string[] = [];
   const grouped: Record<string, ForumThread[]> = {};
   for (const t of threads) {
-    if (!grouped[t.date]) { grouped[t.date] = []; groupOrder.push(t.date); }
-    grouped[t.date].push(t);
+    const label = dateGroupLabel(t.createdAt);
+    if (!grouped[label]) { grouped[label] = []; groupOrder.push(label); }
+    grouped[label].push(t);
   }
 
   return (
     <SafeAreaView style={styles.root} edges={['top']}>
       <Text style={styles.pageTitle}>Community</Text>
-      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
-        {groupOrder.map((group) => (
-          <View key={group}>
-            <Text style={styles.groupHeader}>{group}</Text>
-            {grouped[group].map((thread) => (
-              <ThreadCard key={thread.id} thread={thread} onPress={() => router.push(`/forum/${thread.id}` as any)} />
-            ))}
-          </View>
-        ))}
-        <View style={{ height: 90 }} />
-      </ScrollView>
+
+      {loading ? (
+        <View style={styles.loadingWrap}>
+          <ActivityIndicator size="large" color={Colors.primary} />
+        </View>
+      ) : (
+        <ScrollView
+          contentContainerStyle={styles.scrollContent}
+          showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+        >
+          {threads.length === 0 && (
+            <View style={styles.emptyWrap}>
+              <Ionicons name="chatbubbles-outline" size={48} color="#D1D5DB" />
+              <Text style={styles.emptyText}>No posts yet. Create the first thread!</Text>
+            </View>
+          )}
+          {groupOrder.map((group) => (
+            <View key={group}>
+              <Text style={styles.groupHeader}>{group}</Text>
+              {grouped[group].map((thread) => (
+                <ThreadCard
+                  key={thread.id}
+                  thread={thread}
+                  currentUser={user ?? null}
+                  onPress={() => router.push(`/forum/${thread.id}` as any)}
+                />
+              ))}
+            </View>
+          ))}
+          <View style={{ height: 90 }} />
+        </ScrollView>
+      )}
 
       <View style={styles.fabContainer} pointerEvents="box-none">
-        <TouchableOpacity style={styles.fab} onPress={() => router.push('/forum/create' as any)} activeOpacity={0.85}>
+        <TouchableOpacity
+          style={styles.fab}
+          onPress={() => router.push('/forum/create' as any)}
+          activeOpacity={0.85}
+        >
           <Text style={styles.fabText}>Create Thread</Text>
         </TouchableOpacity>
       </View>
@@ -268,22 +351,21 @@ export default function ForumScreen() {
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: '#FFFFFF' },
   pageTitle: { fontSize: 26, fontWeight: '800', color: Colors.primary, textAlign: 'center', paddingTop: 12, paddingBottom: 10, letterSpacing: -0.5 },
+  loadingWrap: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  emptyWrap: { alignItems: 'center', paddingTop: 80, gap: 12 },
+  emptyText: { fontSize: 14, color: '#9CA3AF', textAlign: 'center' },
   scrollContent: { paddingHorizontal: 16, paddingBottom: 8 },
   groupHeader: { fontSize: 18, fontWeight: '700', color: '#111827', marginTop: 10, marginBottom: 10 },
 
   // Card
   card: { backgroundColor: '#FDFAF7', borderRadius: 10, marginBottom: 14, overflow: 'hidden', borderWidth: 1, borderColor: '#E5E7EB', shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 4, shadowOffset: { width: 0, height: 1 }, elevation: 1 },
   cardOfficial: { borderColor: OFFICIAL_STYLE.border, borderWidth: 1.5, backgroundColor: OFFICIAL_STYLE.bg },
-
-  // Card header
   cardHeader: { backgroundColor: Colors.primary, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 14, paddingVertical: 10 },
   cardHeaderOfficial: { backgroundColor: OFFICIAL_STYLE.bg, borderBottomWidth: 1, borderBottomColor: OFFICIAL_STYLE.border },
   officialHeaderInner: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   pinnedLabel: { fontSize: 11, fontWeight: '700', color: OFFICIAL_STYLE.tagColor, letterSpacing: 0.8 },
   cardHeaderType: { fontSize: 14, fontWeight: '700', color: '#FFFFFF' },
   cardHeaderDistance: { fontSize: 12, fontWeight: '500', color: '#FFFFFF', opacity: 0.92 },
-
-  // Card body
   cardBody: { padding: 14, paddingBottom: 10 },
   officialTagPill: { alignSelf: 'flex-start', backgroundColor: OFFICIAL_STYLE.tagBg, borderRadius: 6, paddingHorizontal: 8, paddingVertical: 3, marginBottom: 8 },
   officialTagText: { fontSize: 11, fontWeight: '700', color: OFFICIAL_STYLE.tagColor, letterSpacing: 0.5 },
@@ -307,7 +389,7 @@ const styles = StyleSheet.create({
   sendBtn: { width: 32, height: 32, borderRadius: 16, backgroundColor: Colors.primary, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
   chevronBtn: { padding: 2 },
 
-  // Comments section
+  // Comments
   commentsSection: { borderTopWidth: 1, borderTopColor: '#F0EBE3', paddingBottom: 6 },
   commentUsername: { fontSize: 12, fontWeight: '600', color: '#111827' },
   commentDot: { fontSize: 12, color: '#9CA3AF' },
