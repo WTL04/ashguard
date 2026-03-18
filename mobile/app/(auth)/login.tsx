@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import {
   View,
   Text,
@@ -8,7 +8,6 @@ import {
   KeyboardAvoidingView,
   Platform,
   ScrollView,
-  ActivityIndicator,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Link, useRouter } from 'expo-router';
@@ -16,7 +15,6 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '@/constants/colors';
 import { signIn } from '@/lib/authService';
-import { useGoogleAuthRequest, signInWithGoogle } from '@/lib/googleAuthService';
 import { friendlyError } from '@/lib/errorUtils';
 
 export default function LoginScreen() {
@@ -29,27 +27,6 @@ export default function LoginScreen() {
   const [emailFocused, setEmailFocused] = useState(false);
   const [passFocused, setPassFocused] = useState(false);
   const [error, setError] = useState('');
-  const [googleLoading, setGoogleLoading] = useState(false);
-
-  const { request, response, promptAsync } = useGoogleAuthRequest();
-
-  // Handle the Google OAuth response
-  useEffect(() => {
-    if (response?.type === 'success') {
-      const { id_token, access_token } = response.params;
-      setGoogleLoading(true);
-      setError('');
-      signInWithGoogle(id_token, access_token)
-        .then(() => router.replace('/(tabs)/map'))
-        .catch((e: any) => {
-          setError(friendlyError(e.code));
-          setGoogleLoading(false);
-        });
-    } else if (response?.type === 'error') {
-      setError('Google sign-in failed. Please try again.');
-      setGoogleLoading(false);
-    }
-  }, [response]);
 
   const handleLogin = async () => {
     setError('');
@@ -59,11 +36,6 @@ export default function LoginScreen() {
     } catch (e: any) {
       setError(friendlyError(e.code));
     }
-  };
-
-  const handleGoogleLogin = () => {
-    setError('');
-    promptAsync();
   };
 
   return (
@@ -151,7 +123,6 @@ export default function LoginScreen() {
                 </Link>
               </View>
 
-              {/* Error message */}
               {error ? (
                 <Text style={styles.errorText}>{error}</Text>
               ) : null}
@@ -162,30 +133,6 @@ export default function LoginScreen() {
                 activeOpacity={0.85}
               >
                 <Text style={styles.primaryBtnText}>Log In</Text>
-              </TouchableOpacity>
-
-              {/* Divider */}
-              <View style={styles.dividerRow}>
-                <View style={styles.dividerLine} />
-                <Text style={styles.dividerText}>or</Text>
-                <View style={styles.dividerLine} />
-              </View>
-
-              {/* Google Sign-In Button */}
-              <TouchableOpacity
-                style={[styles.googleBtn, (!request || googleLoading) && styles.btnDisabled]}
-                onPress={handleGoogleLogin}
-                disabled={!request || googleLoading}
-                activeOpacity={0.85}
-              >
-                {googleLoading ? (
-                  <ActivityIndicator size="small" color="#4285F4" style={{ marginRight: 8 }} />
-                ) : (
-                  <Ionicons name="logo-google" size={18} color="#4285F4" style={{ marginRight: 8 }} />
-                )}
-                <Text style={styles.googleBtnText}>
-                  {googleLoading ? 'Signing in...' : 'Continue with Google'}
-                </Text>
               </TouchableOpacity>
 
               <View style={styles.footerRow}>
@@ -334,45 +281,6 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     letterSpacing: 0.3,
-  },
-  dividerRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 16,
-    gap: 10,
-  },
-  dividerLine: {
-    flex: 1,
-    height: 1,
-    backgroundColor: Colors.border,
-  },
-  dividerText: {
-    fontSize: 12,
-    color: Colors.textMuted,
-  },
-  googleBtn: {
-    height: 50,
-    backgroundColor: '#FFFFFF',
-    borderRadius: 10,
-    borderWidth: 1.5,
-    borderColor: Colors.border,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 20,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.06,
-    shadowRadius: 4,
-    elevation: 2,
-  },
-  googleBtnText: {
-    fontSize: 15,
-    fontWeight: '600',
-    color: Colors.textPrimary,
-  },
-  btnDisabled: {
-    opacity: 0.5,
   },
   footerRow: {
     flexDirection: 'row',
