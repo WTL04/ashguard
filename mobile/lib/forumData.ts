@@ -1,38 +1,50 @@
-// ── Shared forum data ─────────────────────────────────────────────────────────
-// Both index.tsx and [id].tsx import from here so posts are always in sync.
+// lib/forumData.ts
+// Shared types and Firestore helpers for the forum.
+// Place this file at:  <project-root>/lib/forumData.ts
 
-export interface Comment {
-  id: string;
-  parentId: string | null;
-  username: string;
-  timeAgo: string;
-  text: string;
-  avatarColor: string;
-}
+import {
+  collection,
+  addDoc,
+  doc,
+  onSnapshot,
+  query,
+  orderBy,
+  serverTimestamp,
+  Timestamp,
+} from 'firebase/firestore';
+import { db } from '@/lib/firebaseConfig'; // adjust path if your firebase init lives elsewhere
 
-export interface Tag {
-  id: string;
-  label: string;
-}
+// ── Types ─────────────────────────────────────────────────────────────────────
 
 export type ThreadType = 'official' | 'wildfire' | 'prescribed' | 'resource' | 'question';
 
 export interface ForumThread {
-  id: string;
+  id: string;                 // Firestore document id
   type: ThreadType;
   distance: string;
-  // Official / rich-post fields
-  title?: string;         // shown on official/pinned posts
+  title?: string;
   pinned?: boolean;
+  authorId: string;
   authorUsername: string;
-  authorDate: string;     // e.g. "Mar 13, 2026 · 6:02 AM" or "6min ago"
+  authorDate: string;         // human-readable, derived from createdAt
   body: string;
-  tags: Tag[];
-  date: string;           // group label e.g. "Today"
-  comments: Comment[];
+  tags: string[];             // array of tag label strings
+  createdAt: Timestamp | null;
 }
 
-// Label shown in the orange header bar
+export interface ForumComment {
+  id: string;
+  parentId: string | null;    // null = top-level comment
+  authorId: string;
+  authorUsername: string;
+  avatarColor: string;
+  text: string;
+  createdAt: Timestamp | null;
+  timeAgo: string;            // derived on client from createdAt
+}
+
+// ── Display config ────────────────────────────────────────────────────────────
+
 export const TYPE_LABEL: Record<ThreadType, string> = {
   official:   'Official Notice',
   wildfire:   'Wild Fire',
@@ -41,117 +53,170 @@ export const TYPE_LABEL: Record<ThreadType, string> = {
   question:   'Question',
 };
 
-// Pinned/official card colours
 export const OFFICIAL_STYLE = {
-  border: '#FCD34D',
-  bg: '#FFFBEB',
-  tagBg: '#FEF3C7',
+  border:   '#FCD34D',
+  bg:       '#FFFBEB',
+  tagBg:    '#FEF3C7',
   tagColor: '#B45309',
 };
 
-// Shared mutable array — screens mutate comments in-place via React state,
-// but the initial seed lives here.
-export const FORUM_THREADS: ForumThread[] = [
-  {
-    id: '1',
-    type: 'official',
-    distance: '3.24 miles',
-    pinned: true,
-    title: 'OFFICIAL: Mandatory Evacuation Order – Zone A (Los Angeles County)',
-    authorUsername: 'CAL FIRE',
-    authorDate: 'Mar 13, 2026 · 6:02 AM',
-    body:
-      'A mandatory evacuation order is now in effect for all Zone A residents in the affected area of Los Angeles County.\n\nLeave immediately via Highway 1 North. Do not return until the all-clear is issued by local authorities. Emergency services cannot guarantee safety for those who remain.\n\nBring essential medications, documents, and supplies for at least 72 hours.',
-    tags: [{ id: 't1', label: 'Official' }],
-    date: 'Today',
-    comments: [
-      {
-        id: 'c1',
-        parentId: null,
-        username: 'CAL FIRE',
-        timeAgo: '6:15 AM',
-        text: 'Update: Highway 1 South is now also open for evacuation. Use both lanes.',
-        avatarColor: '#B45309',
-      },
-      {
-        id: 'c2',
-        parentId: null,
-        username: 'linda_v',
-        timeAgo: '6:22 AM',
-        text: 'We just left. Traffic on Hwy 1 is moving slowly past mile 8 but clearing up after that.',
-        avatarColor: '#6B7280',
-      },
-      {
-        id: 'c3',
-        parentId: 'c2',
-        username: 'rescue_patrol',
-        timeAgo: '6:30 AM',
-        text: 'We have a van running loops for mobility-impaired residents on Elm St. Call 818-555-0192.',
-        avatarColor: '#6B7280',
-      },
-      {
-        id: 'c4',
-        parentId: null,
-        username: 'alex_k',
-        timeAgo: '6:41 AM',
-        text: 'Is the pet-friendly shelter still at the Fairgrounds? I have two dogs.',
-        avatarColor: '#6B7280',
-      },
-      {
-        id: 'c5',
-        parentId: 'c4',
-        username: 'CAL FIRE',
-        timeAgo: '6:50 AM',
-        text: 'Yes — the Fairgrounds shelter on Gate 9 accepts dogs and cats. Large animals: call 818-555-0300.',
-        avatarColor: '#B45309',
-      },
-    ],
-  },
-  {
-    id: '2',
-    type: 'wildfire',
-    distance: '3.24 miles',
-    authorUsername: 'the_Real_Fahd_Albinali',
-    authorDate: '6min ago',
-    body: 'Supporting line text lorem ipsum dolor sit amet, consectetur.',
-    tags: [
-      { id: 't4', label: 'Tag' },
-      { id: 't5', label: 'Tag' },
-      { id: 't6', label: 'Tag' },
-    ],
-    date: 'Today',
-    comments: [
-      {
-        id: 'c1',
-        parentId: null,
-        username: 'the_Real_Fahd_Albinali',
-        timeAgo: '6min ago',
-        text: 'What a crazy fire! Hope everyone is safe.',
-        avatarColor: '#6B7280',
-      },
-      {
-        id: 'c2',
-        parentId: 'c1',
-        username: 'the_Real_Fahd_Albinali',
-        timeAgo: '5min ago',
-        text: 'Agreed — stay safe out there.',
-        avatarColor: '#6B7280',
-      },
-    ],
-  },
-  {
-    id: '3',
-    type: 'prescribed',
-    distance: '3.24 miles',
-    authorUsername: 'the_Real_Fahd_Albinali',
-    authorDate: '6min ago',
-    body: 'Supporting line text lorem ipsum dolor sit amet, consectetur.',
-    tags: [
-      { id: 't7', label: 'Tag' },
-      { id: 't8', label: 'Tag' },
-      { id: 't9', label: 'Tag' },
-    ],
-    date: 'Thursday, Month 16th',
-    comments: [],
-  },
-];
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/** Derive a ThreadType from an array of tag labels. */
+export function tagsToType(tags: string[]): ThreadType {
+  if (tags.includes('Official'))  return 'official';
+  if (tags.includes('Resources')) return 'resource';
+  if (tags.includes('Question'))  return 'question';
+  return 'wildfire';
+}
+
+/** Format a Firestore Timestamp into a short human-readable string. */
+export function formatTimeAgo(ts: Timestamp | null): string {
+  if (!ts) return 'just now';
+  const diffMs = Date.now() - ts.toMillis();
+  const diffMin = Math.floor(diffMs / 60_000);
+  if (diffMin < 1)  return 'just now';
+  if (diffMin < 60) return `${diffMin}min ago`;
+  const diffHr = Math.floor(diffMin / 60);
+  if (diffHr < 24)  return `${diffHr}hr ago`;
+  return ts.toDate().toLocaleDateString();
+}
+
+/** Format a Timestamp into "Mar 13, 2026 · 6:02 AM" style. */
+export function formatPostDate(ts: Timestamp | null): string {
+  if (!ts) return '';
+  return ts.toDate().toLocaleString([], {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+/** Return a date-group label ("Today", "Yesterday", or "Mon, Mar 13"). */
+export function dateGroupLabel(ts: Timestamp | null): string {
+  if (!ts) return 'Today';
+  const d = ts.toDate();
+  const now = new Date();
+  const diffDays = Math.floor((now.getTime() - d.getTime()) / 86_400_000);
+  if (diffDays === 0) return 'Today';
+  if (diffDays === 1) return 'Yesterday';
+  return d.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
+}
+
+// ── Firestore reads ───────────────────────────────────────────────────────────
+
+/**
+ * Subscribe to all threads in real-time, ordered newest-first.
+ * Returns an unsubscribe function.
+ */
+export function subscribeToThreads(
+  onData: (threads: ForumThread[]) => void,
+): () => void {
+  const q = query(collection(db, 'threads'), orderBy('createdAt', 'desc'));
+  return onSnapshot(q, (snap) => {
+    const threads: ForumThread[] = snap.docs.map((d) => {
+      const data = d.data();
+      const ts: Timestamp | null = data.createdAt ?? null;
+      return {
+        id: d.id,
+        type: data.type ?? 'wildfire',
+        distance: data.distance ?? '—',
+        title: data.title,
+        pinned: data.pinned ?? false,
+        authorId: data.authorId ?? '',
+        authorUsername: data.authorUsername ?? 'Anonymous',
+        authorDate: formatPostDate(ts),
+        body: data.body ?? '',
+        tags: data.tags ?? [],
+        createdAt: ts,
+      };
+    });
+    onData(threads);
+  });
+}
+
+/**
+ * Subscribe to comments for a thread in real-time, ordered oldest-first.
+ * Returns an unsubscribe function.
+ */
+export function subscribeToComments(
+  threadId: string,
+  onData: (comments: ForumComment[]) => void,
+): () => void {
+  const q = query(
+    collection(db, 'threads', threadId, 'comments'),
+    orderBy('createdAt', 'asc'),
+  );
+  return onSnapshot(q, (snap) => {
+    const comments: ForumComment[] = snap.docs.map((d) => {
+      const data = d.data();
+      const ts: Timestamp | null = data.createdAt ?? null;
+      return {
+        id: d.id,
+        parentId: data.parentId ?? null,
+        authorId: data.authorId ?? '',
+        authorUsername: data.authorUsername ?? 'Anonymous',
+        avatarColor: data.avatarColor ?? '#6B7280',
+        text: data.text ?? '',
+        createdAt: ts,
+        timeAgo: formatTimeAgo(ts),
+      };
+    });
+    onData(comments);
+  });
+}
+
+// ── Firestore writes ──────────────────────────────────────────────────────────
+
+/**
+ * Create a new thread document in Firestore.
+ * Returns the new document id.
+ */
+export async function createThread(params: {
+  title: string;
+  address: string;
+  body: string;
+  tags: string[];
+  authorId: string;
+  authorUsername: string;
+  avatarColor: string;
+}): Promise<string> {
+  const type = tagsToType(params.tags);
+  const ref = await addDoc(collection(db, 'threads'), {
+    type,
+    distance: '—',                  // real distance requires geolocation — hook up later
+    title: params.title || null,
+    pinned: false,
+    authorId: params.authorId,
+    authorUsername: params.authorUsername,
+    avatarColor: params.avatarColor,
+    body: params.body,
+    address: params.address,
+    tags: params.tags,
+    createdAt: serverTimestamp(),
+  });
+  return ref.id;
+}
+
+/**
+ * Post a comment (or reply) on a thread.
+ */
+export async function postComment(params: {
+  threadId: string;
+  parentId: string | null;
+  authorId: string;
+  authorUsername: string;
+  avatarColor: string;
+  text: string;
+}): Promise<void> {
+  await addDoc(collection(db, 'threads', params.threadId, 'comments'), {
+    parentId: params.parentId,
+    authorId: params.authorId,
+    authorUsername: params.authorUsername,
+    avatarColor: params.avatarColor,
+    text: params.text,
+    createdAt: serverTimestamp(),
+  });
+}
