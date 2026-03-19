@@ -13,9 +13,10 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as Location from 'expo-location';
 import * as MapLibreRN from "@maplibre/maplibre-react-native";
-import { Camera, UserLocation, type CameraRef, MarkerView } from "@maplibre/maplibre-react-native";
+import { Camera, UserLocation, type CameraRef, ShapeSource, FillLayer, LineLayer, SymbolLayer, CircleLayer } from "@maplibre/maplibre-react-native";
 const { MapView } = MapLibreRN;
 import { Colors } from '@/constants/colors';
+import { fetchFireData } from "../services/mapApi";
 
 // ── Filter chip config ───────────────────────────────────────────────────────
 const FILTERS = [
@@ -40,6 +41,9 @@ export default function MapLibre() {
   const [userCoords, setUserCoords] = useState<[number, number] | null>(null);
   const [mapReady, setMapReady] = useState(false);
   const [search, setSearch] = useState('');
+  const [fireData, setFireData] = useState<GeoJSON.FeatureCollection | null>(null);
+  const [firesLoading, setFiresLoading] = useState(false);
+  const [firesError, setFiresError] = useState<string | null>(null);
 
   // Request location permission
   useEffect(() => {
@@ -53,6 +57,25 @@ export default function MapLibre() {
     })();
   }, []);
 
+  // Fetch fire data when map is ready
+  useEffect(() => {
+    if (!mapReady) return;
+    setFiresLoading(true);
+    setFiresError(null);
+    fetchFireData()
+      .then((data) => {
+        setFireData(data);
+        setFiresLoading(false);
+      })
+      .catch((err) => {
+        console.error('Failed to fetch fire data:', err);
+        setFiresError('Failed to load fire data');
+        setFiresLoading(false);
+      });
+  }, [mapReady]);
+
+
+  // Set camera to user's location
   const handleLocateMe = () => {
     if (!userCoords || !cameraRef.current) return;
     cameraRef.current.flyTo(userCoords, 600);
@@ -75,6 +98,52 @@ export default function MapLibre() {
       >
         <Camera ref={cameraRef} defaultSettings={defaultSettings} />
         {locationGranted && <UserLocation visible={locationGranted} />}
+        {(activeFilter === 'all' || activeFilter === 'fires') && fireData && (
+          <>
+            {/* Satellite hotspot points - red circles */}
+            <ShapeSource id="hotspots" shape={fireData}>
+              <CircleLayer
+                id="hotspots-layer"
+                filter={['all', ['==', ['geometry-type'], 'Point'], ['!', ['has', 'prescribed_date_start']]]}
+                style={{
+                  circleColor: '#FF4444',
+                  circleRadius: 6,
+                  circleOpacity: 0.85,
+                  circleStrokeWidth: 1,
+                  circleStrokeColor: '#FFFFFF',
+                }}
+              />
+            </ShapeSource>
+
+            {/* Fire perimeters - red polygons */}
+            <ShapeSource id="perimeters" shape={fireData}>
+              <FillLayer
+                id="perimeters-layer"
+                filter={['==', ['geometry-type'], 'Polygon']}
+                style={{
+                  fillColor: '#FF4444',
+                  fillOpacity: 0.35,
+                  fillOutlineColor: '#CC0000',
+                }}
+              />
+            </ShapeSource>
+
+            {/* Prescribed fire points - orange circles */}
+            <ShapeSource id="prescribed-fires" shape={fireData}>
+              <CircleLayer
+                id="prescribed-fires-layer"
+                filter={['all', ['==', ['geometry-type'], 'Point'], ['has', 'prescribed_date_start']]}
+                style={{
+                  circleColor: '#31bf24',
+                  circleRadius: 6,
+                  circleOpacity: 0.85,
+                  circleStrokeWidth: 1,
+                  circleStrokeColor: '#FFFFFF',
+                }}
+              />
+            </ShapeSource>
+          </>
+        )}
       </MapView>
 
       {/* Loading overlay */}
@@ -111,6 +180,7 @@ export default function MapLibre() {
         >
           {FILTERS.map((f) => {
             const active = activeFilter === f.id;
+            const showBadge = f.id === 'fires' && fireData;
             return (
               <TouchableOpacity
                 key={f.id}
@@ -127,6 +197,20 @@ export default function MapLibre() {
                 <Text style={[styles.chipText, active && styles.chipTextActive]}>
                   {f.label}
                 </Text>
+                {showBadge && !firesLoading && !firesError && (
+                  <View style={[styles.badge, active && styles.badgeActive]}>
+                    <Text style={[styles.badgeText, active && styles.badgeTextActive]}>
+                      {fireData?.features.length ?? 0}
+                    </Text>
+                  </View>
+                )}
+                {f.id === 'fires' && firesLoading && (
+                  <ActivityIndicator
+                    size="small"
+                    color={active ? '#fff' : Colors.primary}
+                    style={{ marginLeft: 4 }}
+                  />
+                )}
               </TouchableOpacity>
             );
           })}
@@ -234,6 +318,26 @@ const styles = StyleSheet.create({
     color: '#374151',
   },
   chipTextActive: {
+    color: '#FFFFFF',
+  },
+
+  // Badge
+  badge: {
+    backgroundColor: '#FEE2E2',
+    borderRadius: 10,
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    marginLeft: 4,
+  },
+  badgeActive: {
+    backgroundColor: 'rgba(255,255,255,0.25)',
+  },
+  badgeText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#DC2626',
+  },
+  badgeTextActive: {
     color: '#FFFFFF',
   },
 
