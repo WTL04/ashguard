@@ -67,12 +67,25 @@ export default function SignupScreen() {
 
   const handleRegister = async () => {
     setError('');
+
+    // Basic validation
     if (!fields.email || !fields.password) {
       setError('Email and password are required.');
       return;
     }
+    if (!fields.username || !fields.firstName || !fields.lastName) {
+      setError('Username and full name are required.');
+      return;
+    }
+
     try {
-      await signUp(fields.email.trim(), fields.password);
+      await signUp(fields.email.trim(), fields.password, {
+        username: fields.username.trim(),
+        firstName: fields.firstName.trim(),
+        lastName: fields.lastName.trim(),
+        dob: fields.dob,
+        phone: fields.phone,
+      });
       router.replace('/(tabs)/map');
     } catch (e: any) {
       setError(friendlyError(e.code));
