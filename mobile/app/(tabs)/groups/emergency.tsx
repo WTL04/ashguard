@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import {
   View,
   Text,
@@ -9,13 +9,14 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { Ionicons } from '@expo/vector-icons';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 type SafetyStatus = 'SAFE' | 'NEED HELP!' | 'IN DANGER';
 
 const GROUP_NAME_KEY = 'emergency_group_name';
 const SAFETY_STATUS_KEY = 'emergency_group_safety_status';
+const MEETUP_ADDRESS_KEY = 'emergency_group_meetup_address';
 
 export default function EmergencyGroupScreen() {
   const insets = useSafeAreaInsets();
@@ -23,16 +24,20 @@ export default function EmergencyGroupScreen() {
   const [groupName, setGroupName] = useState('Name of Group');
   const [isEditingName, setIsEditingName] = useState(false);
   const [selectedStatus, setSelectedStatus] = useState<SafetyStatus>('SAFE');
+  const [meetupAddress, setMeetupAddress] = useState('');
   const [isLoaded, setIsLoaded] = useState(false);
 
-  useEffect(() => {
-    loadSavedData();
-  }, []);
+  useFocusEffect(
+    useCallback(() => {
+      loadSavedData();
+    }, [])
+  );
 
   const loadSavedData = async () => {
     try {
       const savedGroupName = await AsyncStorage.getItem(GROUP_NAME_KEY);
       const savedStatus = await AsyncStorage.getItem(SAFETY_STATUS_KEY);
+      const savedMeetupAddress = await AsyncStorage.getItem(MEETUP_ADDRESS_KEY);
 
       if (savedGroupName) {
         setGroupName(savedGroupName);
@@ -45,6 +50,8 @@ export default function EmergencyGroupScreen() {
       ) {
         setSelectedStatus(savedStatus);
       }
+
+      setMeetupAddress(savedMeetupAddress || '');
     } catch (error) {
       console.log('Error loading group data:', error);
     } finally {
@@ -203,10 +210,22 @@ export default function EmergencyGroupScreen() {
                 <Ionicons name="chevron-forward" size={24} color="#fff" />
               </View>
 
-              <Text style={styles.cardBodyText}>
-                View current members location and designate a specific meetup
-                location for group members to gather at.
-              </Text>
+              {meetupAddress ? (
+                <View style={styles.meetupContent}>
+                  <View style={styles.meetupSavedRow}>
+                    <Text style={styles.meetupSavedText} numberOfLines={1}>
+                      {meetupAddress}
+                    </Text>
+
+                    <Ionicons name="create-outline" size={18} color="#F58500" />
+                  </View>
+                </View>
+              ) : (
+                <Text style={styles.cardBodyText}>
+                  View current members location and designate a specific meetup
+                  location for group members to gather at.
+                </Text>
+              )}
             </TouchableOpacity>
 
             <View style={styles.card}>
@@ -288,7 +307,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 14,
-    paddingBottom: 20,
+    paddingBottom: 16,
   },
   backButton: {
     marginRight: 10,
@@ -369,6 +388,30 @@ const styles = StyleSheet.create({
     fontSize: 14,
     lineHeight: 22,
     color: '#555',
+  },
+  meetupContent: {
+    paddingHorizontal: 12,
+    paddingTop: 12,
+    paddingBottom: 14,
+  },
+  meetupSavedRow: {
+    minHeight: 42,
+    borderRadius: 21,
+    borderWidth: 1.5,
+    borderColor: '#F58500',
+    backgroundColor: '#FFF8EF',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 14,
+  },
+  meetupSavedText: {
+    flex: 1,
+    marginRight: 10,
+    color: '#D97706',
+    fontSize: 14,
+    fontWeight: '600',
+    textAlign: 'center',
   },
   checkInBody: {
     paddingHorizontal: 16,
