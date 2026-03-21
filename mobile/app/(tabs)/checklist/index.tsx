@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, Pressable, Modal, TextInput, FlatList, Platform
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '@/constants/colors';
+import { useRouter} from 'expo-router'
 
 interface ItemInChecklist {
     id: string;
@@ -11,6 +12,7 @@ interface ItemInChecklist {
 }
 
 export default function ChecklistScreen() {
+  const router = useRouter();
 
     const [items, setItems] = useState<ItemInChecklist[]>([]);
     const [isModalVisible, setIsModalVisible] = useState(false);
@@ -105,7 +107,8 @@ return (
           </KeyboardAvoidingView>
         </Modal>
 
-        <Pressable style={styles.addRecommendations}>
+        <Pressable style={styles.addRecommendations}
+          onPress={() => router.push('/checklist/recommendations')}>
           <Ionicons name="bulb" size={32} color="white" />
         </Pressable>
 
@@ -284,4 +287,5 @@ const styles = StyleSheet.create({
     justifyContent: 'center', 
     alignItems: 'center',
   },
+
 });
