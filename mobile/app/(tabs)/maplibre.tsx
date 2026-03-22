@@ -20,18 +20,20 @@ import { fetchFireData } from "../services/mapApi";
 
 // ── Filter chip config ───────────────────────────────────────────────────────
 const FILTERS = [
-  { id: 'all',       label: 'All',        icon: 'apps-outline' },
-  { id: 'hospitals', label: 'Hospitals',  icon: 'medical-outline' },
-  { id: 'fires',     label: 'Fires',      icon: 'flame-outline' },
-  { id: 'shelters',  label: 'Shelters',   icon: 'home-outline' },
-  { id: 'food',      label: 'Food Banks', icon: 'fast-food-outline' },
+  { id: 'all',             label: 'All',              icon: 'apps-outline' },
+  { id: 'hospitals',       label: 'Hospitals',        icon: 'medical-outline' },
+  { id: 'perimeters',      label: 'Fire Perimeters',  icon: 'flame-outline' },
+  { id: 'hotspots',        label: 'Satellite Hotspots', icon: 'radio-outline' },
+  { id: 'prescribed',      label: 'Prescribed Fires', icon: 'leaf-outline' },
+  { id: 'shelters',        label: 'Shelters',         icon: 'home-outline' },
+  { id: 'food',            label: 'Food Banks',       icon: 'fast-food-outline' },
 ] as const;
 
 type FilterId = typeof FILTERS[number]['id'];
 
 // California center
 const CA_CENTER: [number, number] = [-119.4179, 36.7783];
-const CA_ZOOM = 5;
+const CA_ZOOM = 13;
 
 export default function MapLibre() {
   const cameraRef = useRef<CameraRef>(null);
@@ -41,10 +43,13 @@ export default function MapLibre() {
   const [userCoords, setUserCoords] = useState<[number, number] | null>(null);
   const [mapReady, setMapReady] = useState(false);
   const [search, setSearch] = useState('');
-  const [fireData, setFireData] = useState<GeoJSON.FeatureCollection | null>(null);
+  // Separate state for each fire data type
+  const [hotspotsData, setHotspotsData] = useState<GeoJSON.FeatureCollection | null>(null);
+  const [perimetersData, setPerimetersData] = useState<GeoJSON.FeatureCollection | null>(null);
+  const [prescribedData, setPrescribedData] = useState<GeoJSON.FeatureCollection | null>(null);
   const [firesLoading, setFiresLoading] = useState(false);
   const [firesError, setFiresError] = useState<string | null>(null);
-  const [selectedFire, setSelectedFire] = useState<GeoJSON.Feature | null>(null); // ← NEW
+  const [selectedFire, setSelectedFire] = useState<GeoJSON.Feature | null>(null);
 
   // Request location permission
   useEffect(() => {
@@ -58,18 +63,40 @@ export default function MapLibre() {
     })();
   }, []);
 
-  // Fetch fire data when map is ready
+  // Fetch and separate fire data into individual collections
   useEffect(() => {
     if (!mapReady) return;
     setFiresLoading(true);
     setFiresError(null);
     fetchFireData()
       .then((data) => {
-        const merged: GeoJSON.FeatureCollection = {
+        // Satellite hotspots (points without prescribed_date_start)
+        const hotspotFeatures = (data.satellite_hotspots?.features ?? []).filter(
+          (f: GeoJSON.Feature) => !f.properties?.prescribed_date_start
+        );
+        setHotspotsData({
           type: 'FeatureCollection',
-          features: (Array.isArray(data) ? data : [data]).flatMap(fc => fc.features ?? []),
-        };
-        setFireData(merged);
+          features: hotspotFeatures,
+        });
+
+        // Fire perimeters (polygons)
+        setPerimetersData({
+          type: 'FeatureCollection',
+          features: data.fire_perimeters?.features ?? [],
+        });
+
+        // Prescribed fires (points with prescribed_date_start)
+        const prescribedFeatures = [
+          ...(data.prescribed_fires?.features ?? []),
+          ...(data.satellite_hotspots?.features ?? []).filter(
+            (f: GeoJSON.Feature) => f.properties?.prescribed_date_start
+          ),
+        ];
+        setPrescribedData({
+          type: 'FeatureCollection',
+          features: prescribedFeatures,
+        });
+
         setFiresLoading(false);
       })
       .catch((err) => {
@@ -87,13 +114,13 @@ export default function MapLibre() {
 
   // Set user location, use California coords if UserLocation doesnt work
   const defaultSettings = userCoords
-    ? { centerCoordinate: userCoords, zoomLevel: 12 }
+    ? { centerCoordinate: userCoords, zoomLevel: 13 }
     : { centerCoordinate: CA_CENTER, zoomLevel: CA_ZOOM };
 
-  // Calculate number of hotspots to display
-  const hotspotCount = fireData?.features.filter(
-    f => f.geometry.type === 'Point' && !f.properties?.prescribed_date_start
-  ).length ?? 0;
+  // Counts for each fire data type
+  const hotspotsCount = hotspotsData?.features.length ?? 0;
+  const perimetersCount = perimetersData?.features.length ?? 0;
+  const prescribedCount = prescribedData?.features.length ?? 0;
 
   return (
     <View style={styles.root}>
@@ -107,63 +134,63 @@ export default function MapLibre() {
       >
         <Camera ref={cameraRef} defaultSettings={defaultSettings} />
         {locationGranted && <UserLocation visible={locationGranted} />}
-        {(activeFilter === 'all' || activeFilter === 'fires') && fireData && (
-          <>
-            {/* Satellite hotspot points - red circles */}
-            <ShapeSource
-              id="hotspots"
-              shape={fireData}
-              onPress={(e) => setSelectedFire(e.features[0])}
-            >
-              <CircleLayer
-                id="hotspots-layer"
-                filter={['all', ['==', ['geometry-type'], 'Point'], ['!', ['has', 'prescribed_date_start']]]}
-                style={{
-                  circleColor: '#FF4444',
-                  circleRadius: 6,
-                  circleOpacity: 0.85,
-                  circleStrokeWidth: 1,
-                  circleStrokeColor: '#FFFFFF',
-                }}
-              />
-            </ShapeSource>
 
-            {/* Fire perimeters - red polygons */}
-            <ShapeSource
-              id="perimeters"
-              shape={fireData}
-              onPress={(e) => setSelectedFire(e.features[0])}
-            >
-              <FillLayer
-                id="perimeters-layer"
-                filter={['==', ['geometry-type'], 'Polygon']}
-                style={{
-                  fillColor: '#FF4444',
-                  fillOpacity: 0.35,
-                  fillOutlineColor: '#CC0000',
-                }}
-              />
-            </ShapeSource>
+        {/* Satellite Hotspots Layer - orange circles */}
+        {(activeFilter === 'all' || activeFilter === 'hotspots') && hotspotsData && (
+          <ShapeSource
+            id="hotspots-data"
+            shape={hotspotsData}
+            onPress={(e) => setSelectedFire(e.features[0])}
+          >
+            <CircleLayer
+              id="hotspots-layer"
+              style={{
+                circleColor: '#FF6B35',
+                circleRadius: 3,
+                circleOpacity: 0.85,
+                circleStrokeWidth: 1,
+                circleStrokeColor: '#FFFFFF',
+              }}
+            />
+          </ShapeSource>
+        )}
 
-            {/* Prescribed fire points - green circles */}
-            <ShapeSource
-              id="prescribed-fires"
-              shape={fireData}
-              onPress={(e) => setSelectedFire(e.features[0])}
-            >
-              <CircleLayer
-                id="prescribed-fires-layer"
-                filter={['all', ['==', ['geometry-type'], 'Point'], ['has', 'prescribed_date_start']]}
-                style={{
-                  circleColor: '#31bf24',
-                  circleRadius: 6,
-                  circleOpacity: 0.85,
-                  circleStrokeWidth: 1,
-                  circleStrokeColor: '#FFFFFF',
-                }}
-              />
-            </ShapeSource>
-          </>
+        {/* Fire Perimeters Layer - red fill */}
+        {(activeFilter === 'all' || activeFilter === 'perimeters') && perimetersData && (
+          <ShapeSource
+            id="perimeters-data"
+            shape={perimetersData}
+            onPress={(e) => setSelectedFire(e.features[0])}
+          >
+            <FillLayer
+              id="perimeters-layer"
+              style={{
+                fillColor: '#FF4444',
+                fillOpacity: 0.6,
+                fillOutlineColor: '#CC0000',
+              }}
+            />
+          </ShapeSource>
+        )}
+
+        {/* Prescribed Fires Layer - green circles */}
+        {(activeFilter === 'all' || activeFilter === 'prescribed') && prescribedData && (
+          <ShapeSource
+            id="prescribed-data"
+            shape={prescribedData}
+            onPress={(e) => setSelectedFire(e.features[0])}
+          >
+            <CircleLayer
+              id="prescribed-fires-layer"
+              style={{
+                circleColor: '#31bf24',
+                circleRadius: 2,
+                circleOpacity: 0.85,
+                circleStrokeWidth: 1,
+                circleStrokeColor: '#FFFFFF',
+              }}
+            />
+          </ShapeSource>
         )}
       </MapView>
 
@@ -201,7 +228,30 @@ export default function MapLibre() {
         >
           {FILTERS.map((f) => {
             const active = activeFilter === f.id;
-            const showBadge = f.id === 'fires' && fireData;
+            // Determine badge count and style for each fire-related filter
+            const isFireFilter = ['hotspots', 'perimeters', 'prescribed'].includes(f.id);
+            let badgeCount = 0;
+            let badgeStyle = styles.badge;
+            let badgeTextStyle = styles.badgeText;
+            let badgeActiveStyle = styles.badgeActive;
+
+            if (f.id === 'hotspots') {
+              badgeCount = hotspotsCount;
+              badgeStyle = styles.badgeHotspots;
+              badgeTextStyle = styles.badgeHotspotsText;
+              badgeActiveStyle = styles.badgeActive;
+            } else if (f.id === 'perimeters') {
+              badgeCount = perimetersCount;
+              badgeStyle = styles.badge;
+              badgeTextStyle = styles.badgeText;
+              badgeActiveStyle = styles.badgeActive;
+            } else if (f.id === 'prescribed') {
+              badgeCount = prescribedCount;
+              badgeStyle = styles.badgePrescribed;
+              badgeTextStyle = styles.badgePrescribedText;
+              badgeActiveStyle = styles.badgePrescribedActive;
+            }
+
             return (
               <TouchableOpacity
                 key={f.id}
@@ -218,14 +268,14 @@ export default function MapLibre() {
                 <Text style={[styles.chipText, active && styles.chipTextActive]}>
                   {f.label}
                 </Text>
-                {showBadge && !firesLoading && !firesError && (
-                  <View style={[styles.badge, active && styles.badgeActive]}>
-                    <Text style={[styles.badgeText, active && styles.badgeTextActive]}>
-                      {hotspotCount}
+                {isFireFilter && !firesLoading && !firesError && badgeCount > 0 && (
+                  <View style={[badgeStyle, active && badgeActiveStyle]}>
+                    <Text style={[badgeTextStyle, active && styles.badgeTextActive]}>
+                      {badgeCount}
                     </Text>
                   </View>
                 )}
-                {f.id === 'fires' && firesLoading && (
+                {isFireFilter && firesLoading && (
                   <ActivityIndicator
                     size="small"
                     color={active ? '#fff' : Colors.primary}
@@ -272,21 +322,47 @@ export default function MapLibre() {
 
             <Text style={styles.popupTitle}>
               {selectedFire.properties?.prescribed_date_start
-                ? '🟢 Prescribed Fire'
-                : '🔴 Active Fire'}
+                ? 'Prescribed Fire'
+                : selectedFire.geometry?.type === 'Polygon' || selectedFire.geometry?.type === 'MultiPolygon'
+                  ? 'Fire Perimeter'
+                  : 'Satellite Hotspot'}
             </Text>
 
             <View style={styles.popupDivider} />
 
-            <Text style={styles.popupDetail}>
-              📅 Date: {selectedFire.properties?.acq_date ?? 'N/A'}
-            </Text>
-            <Text style={styles.popupDetail}>
-              🎯 Confidence: {selectedFire.properties?.confidence ?? 'N/A'}
-            </Text>
-            <Text style={styles.popupDetail}>
-              🛰 Satellite: {selectedFire.properties?.satellite ?? 'N/A'}
-            </Text>
+            {/* Satellite Hotspot Pop Up*/}
+            {selectedFire.properties?.satellite && (
+              <Text style={styles.popupDetail}>
+                Source: {selectedFire.properties.satellite}
+              </Text>
+            )}
+            {selectedFire.properties?.confidence && (
+              <Text style={styles.popupDetail}>
+                Confidence: {selectedFire.properties.confidence}
+              </Text>
+            )}
+            {selectedFire.properties?.acq_date && (
+              <Text style={styles.popupDetail}>
+                Acquired Date: {selectedFire.properties.acq_date}
+              </Text>
+            )}
+
+            {/* Prescribed Fires Pop Up*/}
+            {selectedFire.properties?.name && (
+              <Text style={styles.popupDetail}>
+                Name: {selectedFire.properties.name}
+              </Text>
+            )}
+
+            {selectedFire.properties?.prescribed_date_start && (
+              <Text style={styles.popupDetail}>
+                Start Date: {selectedFire.properties.prescribed_date_start}
+              </Text>
+            )}
+
+
+            {/* TODO: Fire Perimenter Pop Up*/}
+
           </View>
         )}
 
@@ -373,7 +449,7 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
   },
 
-  // Badge
+  // Badge (fire perimeters - red)
   badge: {
     backgroundColor: '#FEE2E2',
     borderRadius: 10,
@@ -391,6 +467,37 @@ const styles = StyleSheet.create({
   },
   badgeTextActive: {
     color: '#FFFFFF',
+  },
+
+  // Badge (satellite hotspots - orange)
+  badgeHotspots: {
+    backgroundColor: '#FFEDD5',
+    borderRadius: 10,
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    marginLeft: 4,
+  },
+  badgeHotspotsText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#EA580C',
+  },
+
+  // Badge (prescribed fires - green)
+  badgePrescribed: {
+    backgroundColor: '#DCFCE7',
+    borderRadius: 10,
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    marginLeft: 4,
+  },
+  badgePrescribedActive: {
+    backgroundColor: 'rgba(255,255,255,0.25)',
+  },
+  badgePrescribedText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#16a34a',
   },
 
   // Floating buttons
@@ -456,5 +563,8 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: '#6B7280',
     marginTop: 4,
+  },
+  popupLink: {
+    color: '#2563EB',
   },
 });
