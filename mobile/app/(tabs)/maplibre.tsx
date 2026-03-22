@@ -35,6 +35,12 @@ type FilterId = typeof FILTERS[number]['id'];
 const CA_CENTER: [number, number] = [-119.4179, 36.7783];
 const CA_ZOOM = 13;
 
+const CONFIDENCE_MAP: Record<string, string> = {
+  "H": 'High',
+  "M": 'Medium',
+  "L": 'Low',
+};
+
 export default function MapLibre() {
   const cameraRef = useRef<CameraRef>(null);
 
@@ -43,6 +49,7 @@ export default function MapLibre() {
   const [userCoords, setUserCoords] = useState<[number, number] | null>(null);
   const [mapReady, setMapReady] = useState(false);
   const [search, setSearch] = useState('');
+
   // Separate state for each fire data type
   const [hotspotsData, setHotspotsData] = useState<GeoJSON.FeatureCollection | null>(null);
   const [perimetersData, setPerimetersData] = useState<GeoJSON.FeatureCollection | null>(null);
@@ -106,7 +113,37 @@ export default function MapLibre() {
       });
   }, [mapReady]);
 
-  // Set camera to user's location
+  const getFeatureCenter = (feature: GeoJSON.Feature): [number, number] | null => {
+    const geom = feature.geometry;
+    if (!geom) return null;
+
+    if (geom.type === 'Point') {
+      return geom.coordinates as [number, number];
+    }
+
+    if (geom.type === 'Polygon' || geom.type === 'MultiPolygon') {
+      const coords = geom.type === 'Polygon' 
+        ? geom.coordinates[0] 
+        : geom.coordinates[0][0];
+      let sumLng = 0, sumLat = 0;
+      for (const coord of coords) {
+        sumLng += coord[0];
+        sumLat += coord[1];
+      }
+      return [sumLng / coords.length, sumLat / coords.length];
+    }
+
+    return null;
+  };
+
+  const handleFirePress = (feature: GeoJSON.Feature) => {
+    setSelectedFire(feature);
+    const center = getFeatureCenter(feature);
+    if (center && cameraRef.current) {
+      cameraRef.current.flyTo(center, 500);
+    }
+  };
+
   const handleLocateMe = () => {
     if (!userCoords || !cameraRef.current) return;
     cameraRef.current.flyTo(userCoords, 600);
@@ -122,12 +159,15 @@ export default function MapLibre() {
   const perimetersCount = perimetersData?.features.length ?? 0;
   const prescribedCount = prescribedData?.features.length ?? 0;
 
+  const map_light_mode = "https://basemaps.cartocdn.com/gl/voyager-gl-style/style.json"
+  const map_dark_mode = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json"
+
   return (
     <View style={styles.root}>
       {/* ── Full-screen map ────────────────────────────────────────────── */}
       <MapView
         style={StyleSheet.absoluteFill}
-        mapStyle="https://basemaps.cartocdn.com/gl/voyager-gl-style/style.json"
+        mapStyle={map_light_mode}
         onDidFinishLoadingMap={() => setMapReady(true)}
         compassEnabled={false}
         attributionEnabled={false}
@@ -140,7 +180,7 @@ export default function MapLibre() {
           <ShapeSource
             id="hotspots-data"
             shape={hotspotsData}
-            onPress={(e) => setSelectedFire(e.features[0])}
+            onPress={(e) => handleFirePress(e.features[0])}
           >
             <CircleLayer
               id="hotspots-layer"
@@ -160,13 +200,13 @@ export default function MapLibre() {
           <ShapeSource
             id="perimeters-data"
             shape={perimetersData}
-            onPress={(e) => setSelectedFire(e.features[0])}
+            onPress={(e) => handleFirePress(e.features[0])}
           >
             <FillLayer
               id="perimeters-layer"
               style={{
                 fillColor: '#FF4444',
-                fillOpacity: 0.6,
+                fillOpacity: 1,
                 fillOutlineColor: '#CC0000',
               }}
             />
@@ -178,7 +218,7 @@ export default function MapLibre() {
           <ShapeSource
             id="prescribed-data"
             shape={prescribedData}
-            onPress={(e) => setSelectedFire(e.features[0])}
+            onPress={(e) => handleFirePress(e.features[0])}
           >
             <CircleLayer
               id="prescribed-fires-layer"
@@ -313,11 +353,10 @@ export default function MapLibre() {
         {selectedFire && (
           <View style={styles.popup} pointerEvents="box-none">
             <TouchableOpacity
-              style={styles.popupClose}
+              style={[styles.popupClose, { padding: 8, marginRight: -8, marginTop: -8 }]}
               onPress={() => setSelectedFire(null)}
-              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
             >
-              <Ionicons name="close" size={16} color="#374151" />
+              <Ionicons name="close" size={24} color="#374151" />
             </TouchableOpacity>
 
             <Text style={styles.popupTitle}>
@@ -330,38 +369,82 @@ export default function MapLibre() {
 
             <View style={styles.popupDivider} />
 
-            {/* Satellite Hotspot Pop Up*/}
+            {/* Satellite Hotspot Pop Up */}
             {selectedFire.properties?.satellite && (
               <Text style={styles.popupDetail}>
-                Source: {selectedFire.properties.satellite}
+                🛰️ Source: {selectedFire.properties.satellite}
               </Text>
             )}
             {selectedFire.properties?.confidence && (
               <Text style={styles.popupDetail}>
-                Confidence: {selectedFire.properties.confidence}
+                🎯 Confidence: {CONFIDENCE_MAP[selectedFire.properties.confidence] ?? selectedFire.properties.confidence}
               </Text>
             )}
             {selectedFire.properties?.acq_date && (
               <Text style={styles.popupDetail}>
-                Acquired Date: {selectedFire.properties.acq_date}
+                📅 Acquired: {selectedFire.properties.acq_date}
               </Text>
             )}
 
-            {/* Prescribed Fires Pop Up*/}
+            {/* Prescribed Fires Pop Up */}
             {selectedFire.properties?.name && (
               <Text style={styles.popupDetail}>
-                Name: {selectedFire.properties.name}
+                🌿 Name: {selectedFire.properties.name}
               </Text>
             )}
-
             {selectedFire.properties?.prescribed_date_start && (
               <Text style={styles.popupDetail}>
-                Start Date: {selectedFire.properties.prescribed_date_start}
+                🗓️ Start Date: {selectedFire.properties.prescribed_date_start}
               </Text>
             )}
 
 
-            {/* TODO: Fire Perimenter Pop Up*/}
+            {/* Fire Perimeter Pop Up */}
+            {selectedFire.properties?.poly_IncidentName && (
+              <Text style={styles.popupDetail}>
+                🔥 Incident Name: {selectedFire.properties.poly_IncidentName}
+              </Text>
+            )}
+            {selectedFire.properties?.attr_POOCounty && (
+              <Text style={styles.popupDetail}>
+                📍 County: {selectedFire.properties.attr_POOCounty}, {selectedFire.properties.attr_POOState}
+              </Text>
+            )}
+            {selectedFire.properties?.poly_Acres_AutoCalc && (
+              <Text style={styles.popupDetail}>
+                📐 Estimated Acres: {Math.round(selectedFire.properties.poly_Acres_AutoCalc).toLocaleString()}
+              </Text>
+            )}
+            {selectedFire.properties?.attr_PercentContained != null && (
+              <Text style={styles.popupDetail}>
+                🧯 Contained: {selectedFire.properties.attr_PercentContained}%
+              </Text>
+            )}
+            {selectedFire.properties?.attr_FireBehaviorGeneral && (
+              <Text style={styles.popupDetail}>
+                ⚠️ Fire Behavior: {selectedFire.properties.attr_FireBehaviorGeneral}
+              </Text>
+            )}
+            {selectedFire.properties?.attr_FireDiscoveryDateTime && (
+              <Text style={styles.popupDetail}>
+                🗓️ Discovered: {new Date(selectedFire.properties.attr_FireDiscoveryDateTime).toLocaleDateString()}
+              </Text>
+            )}
+            {selectedFire.properties?.attr_TotalIncidentPersonnel != null && (
+              <Text style={styles.popupDetail}>
+                👷 Personnel Assigned: {selectedFire.properties.attr_TotalIncidentPersonnel.toLocaleString()}
+              </Text>
+            )}
+            {selectedFire.properties?.attr_FireCause && (
+              <Text style={styles.popupDetail}>
+                💡 Cause: {selectedFire.properties.attr_FireCause}
+              </Text>
+            )}
+            {selectedFire.properties?.attr_ContainmentDateTime && (
+              <Text style={styles.popupDetail}>
+                ✅ Contained On: {new Date(selectedFire.properties.attr_ContainmentDateTime).toLocaleDateString()}
+              </Text>
+            )}
 
           </View>
         )}

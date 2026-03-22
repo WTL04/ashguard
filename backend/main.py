@@ -196,10 +196,9 @@ async def fetch_prescribed_fires(state: str | None = None) -> dict:
 
 
 # TEST: Testing fire perimeters with 2025 california wildfire perimeters
-async def fetch_2025_fire_perimeters() -> dict:
+async def fetch_2026_Year_to_Date_fire_perimeters() -> dict:
     """
-    Returns GeoJSON of fire perimeter data from NIFC.
-    Set state="CA" for California only, otherwise returns global data.
+    Returns GeoJSON of 2026 Year to Date fire perimeter data from NIFC.
     """
     params = {
         "where": "1=1",
@@ -211,7 +210,7 @@ async def fetch_2025_fire_perimeters() -> dict:
     }
 
     url = "https://services3.arcgis.com/T4QMspbfLg3qTGWY/arcgis/rest/services/WFIGS_Interagency_Perimeters_YearToDate/FeatureServer/0/query"
-    logger.info("Fetching 2025 California fire perimeters")
+    logger.info("Fetching 2026 year to date fire perimeters")
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         r = await client.get(url, params=params)
@@ -233,7 +232,7 @@ async def data_ingestion_worker():
                 prescribed_fires,
             ) = await asyncio.gather(
                 fetch_satellite_api(state="CA"),
-                fetch_2025_fire_perimeters(),
+                fetch_2026_Year_to_Date_fire_perimeters(),
                 fetch_prescribed_fires(state="CA"),
             )
 
