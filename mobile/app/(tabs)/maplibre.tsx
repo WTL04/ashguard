@@ -44,6 +44,7 @@ export default function MapLibre() {
   const [fireData, setFireData] = useState<GeoJSON.FeatureCollection | null>(null);
   const [firesLoading, setFiresLoading] = useState(false);
   const [firesError, setFiresError] = useState<string | null>(null);
+  const [selectedFire, setSelectedFire] = useState<GeoJSON.Feature | null>(null); // ← NEW
 
   // Request location permission
   useEffect(() => {
@@ -64,7 +65,11 @@ export default function MapLibre() {
     setFiresError(null);
     fetchFireData()
       .then((data) => {
-        setFireData(data);
+        const merged: GeoJSON.FeatureCollection = {
+          type: 'FeatureCollection',
+          features: (Array.isArray(data) ? data : [data]).flatMap(fc => fc.features ?? []),
+        };
+        setFireData(merged);
         setFiresLoading(false);
       })
       .catch((err) => {
@@ -73,7 +78,6 @@ export default function MapLibre() {
         setFiresLoading(false);
       });
   }, [mapReady]);
-
 
   // Set camera to user's location
   const handleLocateMe = () => {
@@ -85,6 +89,11 @@ export default function MapLibre() {
   const defaultSettings = userCoords
     ? { centerCoordinate: userCoords, zoomLevel: 12 }
     : { centerCoordinate: CA_CENTER, zoomLevel: CA_ZOOM };
+
+  // Calculate number of hotspots to display
+  const hotspotCount = fireData?.features.filter(
+    f => f.geometry.type === 'Point' && !f.properties?.prescribed_date_start
+  ).length ?? 0;
 
   return (
     <View style={styles.root}>
@@ -101,7 +110,11 @@ export default function MapLibre() {
         {(activeFilter === 'all' || activeFilter === 'fires') && fireData && (
           <>
             {/* Satellite hotspot points - red circles */}
-            <ShapeSource id="hotspots" shape={fireData}>
+            <ShapeSource
+              id="hotspots"
+              shape={fireData}
+              onPress={(e) => setSelectedFire(e.features[0])}
+            >
               <CircleLayer
                 id="hotspots-layer"
                 filter={['all', ['==', ['geometry-type'], 'Point'], ['!', ['has', 'prescribed_date_start']]]}
@@ -116,7 +129,11 @@ export default function MapLibre() {
             </ShapeSource>
 
             {/* Fire perimeters - red polygons */}
-            <ShapeSource id="perimeters" shape={fireData}>
+            <ShapeSource
+              id="perimeters"
+              shape={fireData}
+              onPress={(e) => setSelectedFire(e.features[0])}
+            >
               <FillLayer
                 id="perimeters-layer"
                 filter={['==', ['geometry-type'], 'Polygon']}
@@ -128,8 +145,12 @@ export default function MapLibre() {
               />
             </ShapeSource>
 
-            {/* Prescribed fire points - orange circles */}
-            <ShapeSource id="prescribed-fires" shape={fireData}>
+            {/* Prescribed fire points - green circles */}
+            <ShapeSource
+              id="prescribed-fires"
+              shape={fireData}
+              onPress={(e) => setSelectedFire(e.features[0])}
+            >
               <CircleLayer
                 id="prescribed-fires-layer"
                 filter={['all', ['==', ['geometry-type'], 'Point'], ['has', 'prescribed_date_start']]}
@@ -200,7 +221,7 @@ export default function MapLibre() {
                 {showBadge && !firesLoading && !firesError && (
                   <View style={[styles.badge, active && styles.badgeActive]}>
                     <Text style={[styles.badgeText, active && styles.badgeTextActive]}>
-                      {fireData?.features.length ?? 0}
+                      {hotspotCount}
                     </Text>
                   </View>
                 )}
@@ -237,6 +258,37 @@ export default function MapLibre() {
             <Ionicons name="locate-outline" size={20} color={Colors.primary} />
           </TouchableOpacity>
         </View>
+
+        {/* ── Fire detail popup ──────────────────────────────────────────── */}
+        {selectedFire && (
+          <View style={styles.popup} pointerEvents="box-none">
+            <TouchableOpacity
+              style={styles.popupClose}
+              onPress={() => setSelectedFire(null)}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            >
+              <Ionicons name="close" size={16} color="#374151" />
+            </TouchableOpacity>
+
+            <Text style={styles.popupTitle}>
+              {selectedFire.properties?.prescribed_date_start
+                ? '🟢 Prescribed Fire'
+                : '🔴 Active Fire'}
+            </Text>
+
+            <View style={styles.popupDivider} />
+
+            <Text style={styles.popupDetail}>
+              📅 Date: {selectedFire.properties?.acq_date ?? 'N/A'}
+            </Text>
+            <Text style={styles.popupDetail}>
+              🎯 Confidence: {selectedFire.properties?.confidence ?? 'N/A'}
+            </Text>
+            <Text style={styles.popupDetail}>
+              🛰 Satellite: {selectedFire.properties?.satellite ?? 'N/A'}
+            </Text>
+          </View>
+        )}
 
       </SafeAreaView>
     </View>
@@ -366,5 +418,43 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#374151',
     marginTop: 2,
+  },
+
+  // Fire detail popup
+  popup: {
+    position: 'absolute',
+    bottom: 32,
+    left: 16,
+    right: 16,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 14,
+    padding: 16,
+    shadowColor: '#000',
+    shadowOpacity: 0.15,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 6,
+  },
+  popupClose: {
+    position: 'absolute',
+    top: 12,
+    right: 12,
+  },
+  popupTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#111827',
+    marginBottom: 8,
+    paddingRight: 24,
+  },
+  popupDivider: {
+    height: 1,
+    backgroundColor: '#F3F4F6',
+    marginBottom: 8,
+  },
+  popupDetail: {
+    fontSize: 13,
+    color: '#6B7280',
+    marginTop: 4,
   },
 });
