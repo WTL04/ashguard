@@ -1,4 +1,4 @@
-const BASE_URL = 'http://127.0.0.1:8000'; // switch to cloud end-point
+const BASE_URL = 'http://54.193.8.1:8000'; // switch to cloud end-point
 
 export const fetchFireData = async () => {
     const res = await fetch(`${BASE_URL}/api/v1/fires`);
