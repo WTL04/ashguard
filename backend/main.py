@@ -203,14 +203,15 @@ async def fetch_prescribed_fires(state: str | None = None) -> dict:
 async def data_ingestion_worker():
     while True:
         try:
+            # TEST: Switching to Global Data for testing
             (
                 satellite_hotspots,
                 fire_perimeters,
                 prescribed_fires,
             ) = await asyncio.gather(
-                fetch_satellite_api(state="CA"),
-                fetch_fire_perimeters(state="CA"),
-                fetch_prescribed_fires(state="CA"),
+                fetch_satellite_api(state=None),
+                fetch_fire_perimeters(state=None),
+                fetch_prescribed_fires(state=None),
             )
 
             # FIX: store as a named dict so FireDataResponse keys match
