@@ -21,8 +21,8 @@ logger = logging.getLogger(__name__)
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 CACHE_KEY = "ashguard:latest_fire_data"
-CACHE_TTL = 120  # seconds before cache expires
-POLL_INTERVAL = 120  # how often the background worker refreshes
+CACHE_TTL = 300  # seconds before cache expires
+POLL_INTERVAL = 300  # how often the background worker refreshes
 
 redis_client: redis_async.Redis = None
 
@@ -203,15 +203,14 @@ async def fetch_prescribed_fires(state: str | None = None) -> dict:
 async def data_ingestion_worker():
     while True:
         try:
-            # TEST: Switching to Global Data for testing
             (
                 satellite_hotspots,
                 fire_perimeters,
                 prescribed_fires,
             ) = await asyncio.gather(
-                fetch_satellite_api(state=None),
-                fetch_fire_perimeters(state=None),
-                fetch_prescribed_fires(state=None),
+                fetch_satellite_api(state="CA"),
+                fetch_fire_perimeters(state="CA"),
+                fetch_prescribed_fires(state="CA"),
             )
 
             # FIX: store as a named dict so FireDataResponse keys match
