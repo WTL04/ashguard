@@ -4,41 +4,24 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '@/constants/colors';
 import { useRouter} from 'expo-router'
+import { useChecklist } from '@/context/checklistContext';
 
-interface ItemInChecklist {
-    id: string;
-    text: string;
-    isDone: boolean;
-}
 
 export default function ChecklistScreen() {
   const router = useRouter();
 
-    const [items, setItems] = useState<ItemInChecklist[]>([]);
+    const {checklist, addManualItem, removeItem, toggleDone } = useChecklist();
     const [isModalVisible, setIsModalVisible] = useState(false);
     const [inputText, setInputText] = useState('');
 
-    const addItem = () => {
-        if (inputText.trim().length > 0) {
-            const newItem: ItemInChecklist = {
-                id: Date.now().toString(),
-                text: inputText,
-                isDone:false,
-            };
-            setItems([...items, newItem]);
-            setInputText('');
-            setIsModalVisible(false);
-        }
-    };
+const addItem = () => {
+    if (inputText.trim().length > 0) {
+      addManualItem(inputText); 
+      setInputText('');
+      setIsModalVisible(false);
+    }
+  };
 
-    const toggleItem = (id: string) => {
-        setItems(prev => prev.map(item =>
-            item.id == id ? { ...item, isDone: !item.isDone } : item));
-    };
-
-    const deleteItem = (id: string) => {
-        setItems(prev => prev.filter(item => item.id !== id));
-    };
 
 
 return (
@@ -47,7 +30,7 @@ return (
       <View style={styles.headerLine} />
 
       <View style={styles.content}>
-        {items.length === 0 ? (
+        {checklist.length === 0 ? (
           <View style={styles.emptyContainer}>
             <Ionicons name="list" size={80} color="#E0E0E0" />
             <Text style={styles.emptyText}>Your checklist is currently empty.</Text>
@@ -55,12 +38,12 @@ return (
           </View>
         ) : (
           <FlatList
-            data={items}
+            data={checklist}
             keyExtractor={(item) => item.id}
             contentContainerStyle={styles.listContainer}
             renderItem={({ item }) => (
               <View style={styles.itemRow}>
-                <Pressable onPress={() => toggleItem(item.id)} style={styles.checkbox}>
+                <Pressable onPress={() => toggleDone(item.id)} style={styles.checkbox}>
                   <Ionicons 
                     name={item.isDone ? "checkmark-circle" : "ellipse-outline"} 
                     size={32} 
@@ -68,10 +51,10 @@ return (
                 </Pressable>
                 
                 <Text style={[styles.itemText, item.isDone && styles.itemTextDone]}>
-                  {item.text}
+                  {item.name}
                 </Text>
 
-                <Pressable onPress={() => deleteItem(item.id)}>
+                <Pressable onPress={() => removeItem(item.id)}>
                   <Ionicons name="trash-outline" size={24} color="#E74C3C" />
                 </Pressable>
               </View>
