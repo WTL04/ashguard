@@ -33,7 +33,7 @@ export default function LoginScreen() {
     setError('');
     try {
       await signIn(email.trim(), password);
-      router.replace('/(tabs)/maplibre');
+      router.replace('/(tabs)/map');
     } catch (e: any) {
       setError(friendlyError(e.code));
     }

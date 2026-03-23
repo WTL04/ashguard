@@ -38,7 +38,7 @@ export default function TabsLayout() {
       }}
     >
       <Tabs.Screen
-        name="maplibre"
+        name="map"
         options={{
           tabBarIcon: ({ focused }) => <TabIcon icon="map" focused={focused} />,
         }}
