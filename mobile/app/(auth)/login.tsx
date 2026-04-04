@@ -29,15 +29,17 @@ export default function LoginScreen() {
   const [passFocused, setPassFocused] = useState(false);
   const [error, setError] = useState('');
 
-  const handleLogin = async () => {
-    setError('');
-    try {
-      await signIn(email.trim(), password);
-      router.replace('/(tabs)/maplibre');
-    } catch (e: any) {
-      setError(friendlyError(e.code));
-    }
-  };
+const handleLogin = async () => {
+  setError('');
+  try {
+    await signIn(email.trim(), password);
+    router.replace('/(tabs)/maplibre');
+  } catch (e: any) {
+    console.log('LOGIN ERROR CODE:', e.code);
+    console.log('LOGIN ERROR MSG:', e.message);
+    setError(friendlyError(e.code));
+  }
+};
 
   return (
     <LinearGradient

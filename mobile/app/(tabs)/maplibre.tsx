@@ -16,7 +16,7 @@ import * as MapLibreRN from "@maplibre/maplibre-react-native";
 import { Camera, UserLocation, type CameraRef, ShapeSource, FillLayer, LineLayer, SymbolLayer, CircleLayer } from "@maplibre/maplibre-react-native";
 const { MapView } = MapLibreRN;
 import { Colors } from '@/constants/colors';
-import { fetchFireData } from "../services/mapApi";
+import { fetchFireData } from "@/lib/mapApi";
 
 // ── Filter chip config ───────────────────────────────────────────────────────
 const FILTERS = [
