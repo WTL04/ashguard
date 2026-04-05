@@ -13,6 +13,7 @@ from datetime import date
 import pandas as pd
 from io import StringIO
 import httpx
+from incidents import incidents_sync_worker, sync_calfire_incidents
 
 load_dotenv()
 
@@ -281,10 +282,12 @@ async def lifespan(app: FastAPI):
         logger.error(f"Redis connection failed: {e}")
 
     task = asyncio.create_task(data_ingestion_worker())
+    incidents_task = asyncio.create_task(incidents_sync_worker())
     yield
     task.cancel()
+    incidents_task.cancel()
     try:
-        await task
+        await asyncio.gather(task, incidents_task, return_exceptions=True)
     except asyncio.CancelledError:
         pass
     await redis_client.aclose()
@@ -346,3 +349,20 @@ async def flush_cache():
     """Clears the cache — useful for testing."""
     await redis_client.delete(CACHE_KEY)
     return {"message": "Cache cleared"}
+
+
+@app.post("/api/v1/incidents/sync")
+async def manual_sync_incidents():
+    """
+    Manually triggers a CalFire RSS sync into Firestore.
+    Useful for testing or forcing an immediate update.
+    """
+    try:
+        count = await sync_calfire_incidents()
+        return {"message": f"Sync complete", "incidents_processed": count}
+    except Exception as e:
+        logger.error(f"Manual sync failed: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"Sync failed: {str(e)}"},
+        )
