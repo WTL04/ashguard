@@ -12,7 +12,6 @@ import os
 import logging
 import asyncio
 import hashlib
-import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 
 import httpx
@@ -23,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-CALFIRE_RSS_URL = "https://www.fire.ca.gov/incidents/rss"
+CALFIRE_API_URL = "https://incidents.fire.ca.gov/umbraco/api/IncidentApi/List?inactive=false"
 SYNC_INTERVAL   = 900   # seconds — sync every 15 minutes
 AUTHOR_NAME     = "CAL FIRE"
 AVATAR_COLOR    = "#B45309"
@@ -77,69 +76,92 @@ def _stable_doc_id(title: str) -> str:
     return f"calfire_{slug}"
 
 
-def _parse_calfire_rss(xml_text: str) -> list[dict]:
+def _parse_calfire_json(data: list) -> list[dict]:
     """
-    Parses the CalFire RSS XML and returns a list of incident dicts.
-    Each dict has: title, body, link, location, updated_at
+    Parses the CalFire JSON API response and returns a list of incident dicts.
     """
     incidents = []
 
-    try:
-        root = ET.fromstring(xml_text)
-    except ET.ParseError as e:
-        logger.error(f"RSS XML parse error: {e}")
-        return incidents
-
-    # RSS 2.0 structure: <rss><channel><item>...
-    channel = root.find("channel")
-    if channel is None:
-        logger.warning("CalFire RSS: no <channel> element found")
-        return incidents
-
-    for item in channel.findall("item"):
-        title_el       = item.find("title")
-        description_el = item.find("description")
-        link_el        = item.find("link")
-        pub_date_el    = item.find("pubDate")
-
-        if title_el is None or title_el.text is None:
+    for item in data:
+        name = item.get("Name", "").strip()
+        if not name:
             continue
 
-        title       = title_el.text.strip()
-        description = description_el.text.strip() if description_el is not None and description_el.text else ""
-        link        = link_el.text.strip() if link_el is not None and link_el.text else ""
+        # Build readable body from available fields
+        parts = []
+        if item.get("Location"):
+            parts.append(f"Location: {item['Location']}")
+        if item.get("County"):
+            parts.append(f"County: {item['County']}")
+        if item.get("AcresBurned") is not None:
+            parts.append(f"Acres Burned: {item['AcresBurned']:,}")
+        if item.get("PercentContained") is not None:
+            parts.append(f"Containment: {item['PercentContained']}%")
+        if item.get("Cause"):
+            parts.append(f"Cause: {item['Cause']}")
+        if item.get("ConditionStatement"):
+            parts.append(f"\n{item['ConditionStatement']}")
 
-        # Parse pub date — used to avoid re-stamping unchanged incidents
-        updated_at = None
-        if pub_date_el is not None and pub_date_el.text:
-            try:
-                updated_at = datetime.strptime(
-                    pub_date_el.text.strip(), "%a, %d %b %Y %H:%M:%S %z"
-                )
-            except ValueError:
-                updated_at = datetime.now(timezone.utc)
-        else:
-            updated_at = datetime.now(timezone.utc)
+        url = item.get("Url", "")
+        if url:
+            parts.append(f"\nMore info: https://www.fire.ca.gov{url}")
 
-        # Build a clean body: strip HTML tags from description
-        import re
-        clean_body = re.sub(r"<[^>]+>", "", description).strip()
-        if link:
-            clean_body += f"\n\nMore info: {link}"
+        body = "\n".join(parts) if parts else "No additional details available."
+
+        # Parse updated date
+        updated_at = datetime.now(timezone.utc)
+        for date_field in ("Updated", "Started", "StartedDateOnly"):
+            raw = item.get(date_field)
+            if raw:
+                try:
+                    updated_at = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+                    break
+                except ValueError:
+                    pass
 
         incidents.append({
-            "title":      title,
-            "body":       clean_body or "No additional details available.",
-            "link":       link,
+            "title":      name,
+            "body":       body,
+            "link":       f"https://www.fire.ca.gov{url}" if url else "",
             "updated_at": updated_at,
-            "doc_id":     _stable_doc_id(title),
+            "doc_id":     _stable_doc_id(name),
         })
 
-    logger.info(f"CalFire RSS: parsed {len(incidents)} incidents")
+    logger.info(f"CalFire API: parsed {len(incidents)} active incidents")
     return incidents
 
 
-# ── Firestore Upsert ──────────────────────────────────────────────────────────
+async def sync_calfire_incidents() -> int:
+    """
+    Fetches active CalFire incidents from the JSON API and upserts into Firestore.
+    Returns the number of incidents processed.
+    """
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        try:
+            r = await client.get(CALFIRE_API_URL)
+            r.raise_for_status()
+        except httpx.HTTPError as e:
+            logger.error(f"CalFire API fetch failed: {e}")
+            return 0
+
+    try:
+        data = r.json()
+    except Exception as e:
+        logger.error(f"CalFire API JSON parse failed: {e}")
+        return 0
+
+    if not isinstance(data, list):
+        logger.warning("CalFire API: unexpected response format")
+        return 0
+
+    incidents = _parse_calfire_json(data)
+    if not incidents:
+        logger.warning("CalFire API: no active incidents found")
+        return 0
+
+    db = get_db()
+    await asyncio.gather(*[_upsert_incident(db, inc) for inc in incidents])
+    return len(incidents)
 
 async def _upsert_incident(db: firestore.AsyncClient, incident: dict) -> None:
     """
