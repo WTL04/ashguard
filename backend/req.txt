@@ -13,3 +13,10 @@ httpx
 
 # environment variables
 python-dotenv
+
+# firebase / firestore
+firebase-admin
+google-cloud-firestore
+
+# async redis
+redis[asyncio]

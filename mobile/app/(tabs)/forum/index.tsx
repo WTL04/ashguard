@@ -179,9 +179,11 @@ function ThreadCard({
             <Text style={styles.officialTagText}>OFFICIAL</Text>
           </View>
         )}
-        {isOfficial && thread.title && (
-          <Text style={styles.threadTitle}>{thread.title}</Text>
-        )}
+        {thread.title ? (
+          <Text style={isOfficial ? styles.threadTitle : styles.threadTitleRegular}>
+            {thread.title}
+          </Text>
+        ) : null}
         <View style={styles.authorRow}>
           <Avatar
             username={thread.authorUsername}
@@ -273,11 +275,23 @@ function ThreadCard({
 
 // ── Main screen ───────────────────────────────────────────────────────────────
 
+// ── Filter config ─────────────────────────────────────────────────────────────
+
+type FilterOption = 'all' | 'wildfire' | 'question' | 'resource';
+
+const FILTER_TABS: { key: FilterOption; label: string }[] = [
+  { key: 'all',      label: 'All' },
+  { key: 'wildfire', label: '🔥 Wildfire' },
+  { key: 'question', label: '❓ Question' },
+  { key: 'resource', label: '📦 Resources' },
+];
+
 export default function ForumScreen() {
   const router = useRouter();
   const [user] = useAuthState(auth);
   const [threads, setThreads] = useState<ForumThread[]>([]);
   const [loading, setLoading] = useState(true);
+  const [activeFilter, setActiveFilter] = useState<FilterOption>('all');
 
   useEffect(() => {
     const unsub = subscribeToThreads((data) => {
@@ -287,10 +301,20 @@ export default function ForumScreen() {
     return unsub;
   }, []);
 
-  // Group by date label, preserving order (newest first = today at top)
+  // Separate pinned/official threads — always shown regardless of filter
+  const pinnedThreads = threads.filter((t) => t.type === 'official' || t.pinned);
+
+  // Apply filter to regular threads
+  const regularThreads = threads.filter((t) => {
+    if (t.type === 'official' || t.pinned) return false;
+    if (activeFilter === 'all') return true;
+    return t.type === activeFilter;
+  });
+
+  // Group regular threads by date label, preserving order (newest first)
   const groupOrder: string[] = [];
   const grouped: Record<string, ForumThread[]> = {};
-  for (const t of threads) {
+  for (const t of regularThreads) {
     const label = dateGroupLabel(t.createdAt);
     if (!grouped[label]) { grouped[label] = []; groupOrder.push(label); }
     grouped[label].push(t);
@@ -299,6 +323,27 @@ export default function ForumScreen() {
   return (
     <SafeAreaView style={styles.root} edges={['top']}>
       <Text style={styles.pageTitle}>Community</Text>
+
+      {/* Filter tabs */}
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={styles.filterBar}
+        style={styles.filterBarWrap}
+      >
+        {FILTER_TABS.map((tab) => (
+          <TouchableOpacity
+            key={tab.key}
+            style={[styles.filterTab, activeFilter === tab.key && styles.filterTabActive]}
+            onPress={() => setActiveFilter(tab.key)}
+            activeOpacity={0.75}
+          >
+            <Text style={[styles.filterTabText, activeFilter === tab.key && styles.filterTabTextActive]}>
+              {tab.label}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </ScrollView>
 
       {loading ? (
         <View style={styles.loadingWrap}>
@@ -316,10 +361,12 @@ export default function ForumScreen() {
               <Text style={styles.emptyText}>No posts yet. Create the first thread!</Text>
             </View>
           )}
-          {groupOrder.map((group) => (
-            <View key={group}>
-              <Text style={styles.groupHeader}>{group}</Text>
-              {grouped[group].map((thread) => (
+
+          {/* Pinned / Official notices always at top regardless of filter */}
+          {pinnedThreads.length > 0 && (
+            <View>
+              <Text style={styles.groupHeader}>📌 Pinned</Text>
+              {pinnedThreads.map((thread) => (
                 <ThreadCard
                   key={thread.id}
                   thread={thread}
@@ -328,7 +375,28 @@ export default function ForumScreen() {
                 />
               ))}
             </View>
-          ))}
+          )}
+
+          {/* Filtered threads grouped by date */}
+          {regularThreads.length === 0 && activeFilter !== 'all' ? (
+            <View style={styles.emptyWrap}>
+              <Text style={styles.emptyText}>No posts in this category yet.</Text>
+            </View>
+          ) : (
+            groupOrder.map((group) => (
+              <View key={group}>
+                <Text style={styles.groupHeader}>{group}</Text>
+                {grouped[group].map((thread) => (
+                  <ThreadCard
+                    key={thread.id}
+                    thread={thread}
+                    currentUser={user ?? null}
+                    onPress={() => router.push(`/forum/${thread.id}` as any)}
+                  />
+                ))}
+              </View>
+            ))
+          )}
           <View style={{ height: 90 }} />
         </ScrollView>
       )}
@@ -357,6 +425,14 @@ const styles = StyleSheet.create({
   scrollContent: { paddingHorizontal: 16, paddingBottom: 8 },
   groupHeader: { fontSize: 18, fontWeight: '700', color: '#111827', marginTop: 10, marginBottom: 10 },
 
+  // Filter bar
+  filterBarWrap: { flexGrow: 0, flexShrink: 0 },
+  filterBar: { flexDirection: 'row', gap: 8, paddingHorizontal: 16, paddingVertical: 10 },
+  filterTab: { paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20, borderWidth: 1, borderColor: '#E5E7EB', backgroundColor: '#F9FAFB' },
+  filterTabActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
+  filterTabText: { fontSize: 13, fontWeight: '600', color: '#6B7280' },
+  filterTabTextActive: { color: '#FFFFFF' },
+
   // Card
   card: { backgroundColor: '#FDFAF7', borderRadius: 10, marginBottom: 14, overflow: 'hidden', borderWidth: 1, borderColor: '#E5E7EB', shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 4, shadowOffset: { width: 0, height: 1 }, elevation: 1 },
   cardOfficial: { borderColor: OFFICIAL_STYLE.border, borderWidth: 1.5, backgroundColor: OFFICIAL_STYLE.bg },
@@ -370,6 +446,7 @@ const styles = StyleSheet.create({
   officialTagPill: { alignSelf: 'flex-start', backgroundColor: OFFICIAL_STYLE.tagBg, borderRadius: 6, paddingHorizontal: 8, paddingVertical: 3, marginBottom: 8 },
   officialTagText: { fontSize: 11, fontWeight: '700', color: OFFICIAL_STYLE.tagColor, letterSpacing: 0.5 },
   threadTitle: { fontSize: 18, fontWeight: '700', color: '#111827', lineHeight: 25, marginBottom: 12, letterSpacing: -0.3 },
+  threadTitleRegular: { fontSize: 15, fontWeight: '700', color: '#111827', lineHeight: 21, marginBottom: 8, letterSpacing: -0.2 },
   authorRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 10 },
   authorName: { fontSize: 13, fontWeight: '600', color: '#374151' },
   authorDate: { fontSize: 11, color: '#9CA3AF', marginTop: 1 },

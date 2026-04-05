@@ -33,7 +33,7 @@ type FilterId = typeof FILTERS[number]['id'];
 
 // California center
 const CA_CENTER: [number, number] = [-119.4179, 36.7783];
-const CA_ZOOM = 13;
+const CA_ZOOM = 6;
 
 const CONFIDENCE_MAP: Record<string, string> = {
   "H": 'High',
@@ -61,14 +61,37 @@ export default function MapLibre() {
   // Request location permission
   useEffect(() => {
     (async () => {
-      const { status } = await Location.requestForegroundPermissionsAsync();
-      if (status === 'granted') {
+      try {
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (status !== 'granted') return;
         setLocationGranted(true);
-        const loc = await Location.getCurrentPositionAsync({});
-        setUserCoords([loc.coords.longitude, loc.coords.latitude]);
+        try {
+          const loc = await Location.getCurrentPositionAsync({
+            accuracy: Location.Accuracy.Low,
+          });
+          setUserCoords([loc.coords.longitude, loc.coords.latitude]);
+        } catch {
+          // GPS unavailable on emulator — fall back to CA center silently
+          console.warn('GPS unavailable, defaulting to California center');
+        }
+      } catch (err) {
+        console.warn('Location permission error:', err);
       }
     })();
   }, []);
+
+  // Once map is ready, fly to user location if we have it, otherwise stay on CA
+  useEffect(() => {
+    if (!mapReady || !cameraRef.current) return;
+    if (userCoords) {
+      cameraRef.current.setCamera({
+        centerCoordinate: userCoords,
+        zoomLevel: 13,
+        animationMode: 'flyTo',
+        animationDuration: 800,
+      });
+    }
+  }, [mapReady, userCoords]);
 
   // Fetch and separate fire data into individual collections
   useEffect(() => {
@@ -145,14 +168,23 @@ export default function MapLibre() {
   };
 
   const handleLocateMe = () => {
-    if (!userCoords || !cameraRef.current) return;
-    cameraRef.current.flyTo(userCoords, 600);
+    if (!cameraRef.current) return;
+    if (userCoords) {
+      cameraRef.current.setCamera({
+        centerCoordinate: userCoords,
+        zoomLevel: 13,
+        animationMode: 'flyTo',
+        animationDuration: 600,
+      });
+    } else {
+      cameraRef.current.setCamera({
+        centerCoordinate: CA_CENTER,
+        zoomLevel: CA_ZOOM,
+        animationMode: 'flyTo',
+        animationDuration: 600,
+      });
+    }
   };
-
-  // Set user location, use California coords if UserLocation doesnt work
-  const defaultSettings = userCoords
-    ? { centerCoordinate: userCoords, zoomLevel: 13 }
-    : { centerCoordinate: CA_CENTER, zoomLevel: CA_ZOOM };
 
   // Counts for each fire data type
   const hotspotsCount = hotspotsData?.features.length ?? 0;
@@ -172,7 +204,10 @@ export default function MapLibre() {
         compassEnabled={false}
         attributionEnabled={false}
       >
-        <Camera ref={cameraRef} defaultSettings={defaultSettings} />
+        <Camera
+          ref={cameraRef}
+          defaultSettings={{ centerCoordinate: CA_CENTER, zoomLevel: CA_ZOOM }}
+        />
         {locationGranted && <UserLocation visible={locationGranted} />}
 
         {/* Satellite Hotspots Layer - orange circles */}
@@ -268,7 +303,6 @@ export default function MapLibre() {
         >
           {FILTERS.map((f) => {
             const active = activeFilter === f.id;
-            // Determine badge count and style for each fire-related filter
             const isFireFilter = ['hotspots', 'perimeters', 'prescribed'].includes(f.id);
             let badgeCount = 0;
             let badgeStyle = styles.badge;
@@ -340,9 +374,8 @@ export default function MapLibre() {
           </TouchableOpacity>
 
           <TouchableOpacity
-            style={[styles.fabBtn, !locationGranted && { opacity: 0.4 }]}
+            style={styles.fabBtn}
             onPress={handleLocateMe}
-            disabled={!locationGranted}
             activeOpacity={0.85}
           >
             <Ionicons name="locate-outline" size={20} color={Colors.primary} />
@@ -397,7 +430,6 @@ export default function MapLibre() {
                 🗓️ Start Date: {selectedFire.properties.prescribed_date_start}
               </Text>
             )}
-
 
             {/* Fire Perimeter Pop Up */}
             {selectedFire.properties?.poly_IncidentName && (
