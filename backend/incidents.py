@@ -1,7 +1,7 @@
 """
 incidents.py
 ------------
-Fetches active California wildfire incidents from the CalFire RSS feed
+Fetches active California wildfire incidents from the CalFire JSON API
 and upserts them into Firestore as pinned official notices.
 
 Firestore collection: threads
@@ -57,14 +57,13 @@ def get_db() -> firestore.AsyncClient:
         _db = firestore.AsyncClient(project=project_id, credentials=credentials)
         logger.info("Firestore: authenticated via service account file")
     else:
-        # Application Default Credentials (Cloud Run, GCE, etc.)
         _db = firestore.AsyncClient(project=project_id)
         logger.info("Firestore: authenticated via Application Default Credentials")
 
     return _db
 
 
-# ── RSS Parsing ───────────────────────────────────────────────────────────────
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _stable_doc_id(title: str) -> str:
     """
@@ -75,6 +74,8 @@ def _stable_doc_id(title: str) -> str:
     slug = hashlib.md5(title.strip().lower().encode()).hexdigest()[:12]
     return f"calfire_{slug}"
 
+
+# ── JSON Parsing ──────────────────────────────────────────────────────────────
 
 def _parse_calfire_json(data: list) -> list[dict]:
     """
@@ -131,6 +132,53 @@ def _parse_calfire_json(data: list) -> list[dict]:
     return incidents
 
 
+# ── Firestore Upsert ──────────────────────────────────────────────────────────
+
+async def _upsert_incident(db: firestore.AsyncClient, incident: dict) -> None:
+    """
+    Upserts a single incident into Firestore.
+    - If the doc doesn't exist: creates it (new fire → new thread)
+    - If it exists but the title/body changed: updates it
+    - If nothing changed: skips the write
+    """
+    ref = db.collection("threads").document(incident["doc_id"])
+    snap = await ref.get()
+
+    now_ts = firestore.SERVER_TIMESTAMP
+
+    if not snap.exists:
+        await ref.set({
+            "type":           "official",
+            "pinned":         True,
+            "title":          incident["title"],
+            "body":           incident["body"],
+            "tags":           [],
+            "distance":       "—",
+            "authorId":       "calfire_official",
+            "authorUsername": AUTHOR_NAME,
+            "avatarColor":    AVATAR_COLOR,
+            "address":        "",
+            "sourceUrl":      incident["link"],
+            "createdAt":      now_ts,
+            "updatedAt":      now_ts,
+        })
+        logger.info(f"Firestore: created incident '{incident['title']}'")
+    else:
+        existing = snap.to_dict()
+        if (existing.get("title") != incident["title"] or
+                existing.get("body") != incident["body"]):
+            await ref.update({
+                "title":     incident["title"],
+                "body":      incident["body"],
+                "updatedAt": now_ts,
+            })
+            logger.info(f"Firestore: updated incident '{incident['title']}'")
+        else:
+            logger.debug(f"Firestore: no change for '{incident['title']}', skipping")
+
+
+# ── Sync ──────────────────────────────────────────────────────────────────────
+
 async def sync_calfire_incidents() -> int:
     """
     Fetches active CalFire incidents from the JSON API and upserts into Firestore.
@@ -160,74 +208,6 @@ async def sync_calfire_incidents() -> int:
         return 0
 
     db = get_db()
-    await asyncio.gather(*[_upsert_incident(db, inc) for inc in incidents])
-    return len(incidents)
-
-async def _upsert_incident(db: firestore.AsyncClient, incident: dict) -> None:
-    """
-    Upserts a single incident into Firestore.
-    - If the doc doesn't exist: creates it (new fire → new thread)
-    - If it exists but the title/body changed: updates body only
-    - If nothing changed: skips the write (no unnecessary Firestore ops)
-    """
-    ref = db.collection("threads").document(incident["doc_id"])
-    snap = await ref.get()
-
-    now_ts = firestore.SERVER_TIMESTAMP
-
-    if not snap.exists:
-        await ref.set({
-            "type":            "official",
-            "pinned":          True,
-            "title":           incident["title"],
-            "body":            incident["body"],
-            "tags":            [],
-            "distance":        "—",
-            "authorId":        "calfire_official",
-            "authorUsername":  AUTHOR_NAME,
-            "avatarColor":     AVATAR_COLOR,
-            "address":         "",
-            "sourceUrl":       incident["link"],
-            "createdAt":       now_ts,
-            "updatedAt":       now_ts,
-        })
-        logger.info(f"Firestore: created incident '{incident['title']}'")
-
-    else:
-        existing = snap.to_dict()
-        # Only write if something meaningful changed
-        if (existing.get("title") != incident["title"] or
-                existing.get("body") != incident["body"]):
-            await ref.update({
-                "title":     incident["title"],
-                "body":      incident["body"],
-                "updatedAt": now_ts,
-            })
-            logger.info(f"Firestore: updated incident '{incident['title']}'")
-        else:
-            logger.debug(f"Firestore: no change for '{incident['title']}', skipping")
-
-
-async def sync_calfire_incidents() -> int:
-    """
-    Fetches CalFire RSS and upserts all active incidents into Firestore.
-    Returns the number of incidents processed.
-    """
-    async with httpx.AsyncClient(timeout=20.0) as client:
-        try:
-            r = await client.get(CALFIRE_RSS_URL)
-            r.raise_for_status()
-        except httpx.HTTPError as e:
-            logger.error(f"CalFire RSS fetch failed: {e}")
-            return 0
-
-    incidents = _parse_calfire_rss(r.text)
-    if not incidents:
-        logger.warning("CalFire RSS: no incidents parsed — feed may be empty or changed format")
-        return 0
-
-    db = get_db()
-    # Upsert all incidents concurrently
     await asyncio.gather(*[_upsert_incident(db, inc) for inc in incidents])
     return len(incidents)
 

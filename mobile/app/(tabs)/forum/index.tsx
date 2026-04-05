@@ -277,13 +277,16 @@ function ThreadCard({
 
 // ── Filter config ─────────────────────────────────────────────────────────────
 
-type FilterOption = 'all' | 'wildfire' | 'question' | 'resource';
+type FilterOption = 'all' | 'pinned' | 'Wildfire' | 'Question' | 'Resources' | 'Self Report' | 'Update';
 
 const FILTER_TABS: { key: FilterOption; label: string }[] = [
-  { key: 'all',      label: 'All' },
-  { key: 'wildfire', label: '🔥 Wildfire' },
-  { key: 'question', label: '❓ Question' },
-  { key: 'resource', label: '📦 Resources' },
+  { key: 'all',         label: 'All' },
+  { key: 'pinned',      label: '📌 Pinned' },
+  { key: 'Wildfire',    label: '🔥 Wildfire' },
+  { key: 'Question',    label: '❓ Question' },
+  { key: 'Resources',   label: '📦 Resources' },
+  { key: 'Self Report', label: '🙋 Self Report' },
+  { key: 'Update',      label: '📢 Update' },
 ];
 
 export default function ForumScreen() {
@@ -301,14 +304,17 @@ export default function ForumScreen() {
     return unsub;
   }, []);
 
-  // Separate pinned/official threads — always shown regardless of filter
   const pinnedThreads = threads.filter((t) => t.type === 'official' || t.pinned);
 
-  // Apply filter to regular threads
+  // Only show pinned section when on 'all' or 'pinned' filter
+  const showPinned = activeFilter === 'all' || activeFilter === 'pinned';
+
+  // Regular threads: exclude pinned, filter by tag
   const regularThreads = threads.filter((t) => {
     if (t.type === 'official' || t.pinned) return false;
     if (activeFilter === 'all') return true;
-    return t.type === activeFilter;
+    if (activeFilter === 'pinned') return false;
+    return t.tags.includes(activeFilter);
   });
 
   // Group regular threads by date label, preserving order (newest first)
@@ -362,8 +368,8 @@ export default function ForumScreen() {
             </View>
           )}
 
-          {/* Pinned / Official notices always at top regardless of filter */}
-          {pinnedThreads.length > 0 && (
+          {/* Pinned / Official notices — only shown on 'all' or 'pinned' filter */}
+          {showPinned && pinnedThreads.length > 0 && (
             <View>
               <Text style={styles.groupHeader}>📌 Pinned</Text>
               {pinnedThreads.map((thread) => (
@@ -378,11 +384,11 @@ export default function ForumScreen() {
           )}
 
           {/* Filtered threads grouped by date */}
-          {regularThreads.length === 0 && activeFilter !== 'all' ? (
+          {regularThreads.length === 0 && activeFilter !== 'all' && activeFilter !== 'pinned' ? (
             <View style={styles.emptyWrap}>
               <Text style={styles.emptyText}>No posts in this category yet.</Text>
             </View>
-          ) : (
+          ) : activeFilter !== 'pinned' ? (
             groupOrder.map((group) => (
               <View key={group}>
                 <Text style={styles.groupHeader}>{group}</Text>
@@ -396,7 +402,7 @@ export default function ForumScreen() {
                 ))}
               </View>
             ))
-          )}
+          ) : null}
           <View style={{ height: 90 }} />
         </ScrollView>
       )}
