@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   View,
   Text,
@@ -6,73 +6,122 @@ import {
   TextInput,
   TouchableOpacity,
   FlatList,
-  Image,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
+import { collection, query, where, onSnapshot, orderBy } from 'firebase/firestore';
+import { db, auth } from '@/lib/firebaseConfig';
 
-const messages = [
-  {
-    id: '1',
-    name: 'First Name Last Name',
-    message: 'Supporting line text lorem ipsum',
-    time: 'Now',
-    unread: true,
-    avatar: 'https://via.placeholder.com/56',
-  },
-  {
-    id: '2',
-    name: 'First Name Last Name',
-    message: 'Supporting line text lorem ipsum',
-    time: '26 min ago',
-    unread: false,
-    avatar: 'https://via.placeholder.com/56',
-  },
-  {
-    id: '3',
-    name: 'First Name Last Name',
-    message: 'Supporting line text lorem ipsum',
-    time: '1 hour ago',
-    unread: false,
-    avatar: 'https://via.placeholder.com/56',
-  },
-  {
-    id: '4',
-    name: 'First Name Last Name',
-    message: 'Supporting line text lorem ipsum',
-    time: '4 hours ago',
-    unread: false,
-    avatar: 'https://via.placeholder.com/56',
-  },
-  {
-    id: '5',
-    name: 'First Name Last Name',
-    message: 'Supporting line text lorem ipsum',
-    time: '2 days ago',
-    unread: false,
-    avatar: 'https://via.placeholder.com/56',
-  },
-];
+function formatMessageTime(timestamp: any) {
+  if (!timestamp?.toDate) return '';
+
+  const date = timestamp.toDate();
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+
+  const minutes = Math.floor(diffMs / (1000 * 60));
+  const hours = Math.floor(diffMs / (1000 * 60 * 60));
+  const days = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+
+  if (minutes < 1) return 'Now';
+  if (minutes < 60) return `${minutes} min ago`;
+  if (hours < 24) return `${hours} hour${hours === 1 ? '' : 's'} ago`;
+  return `${days} day${days === 1 ? '' : 's'} ago`;
+}
 
 export default function GroupsScreen() {
   const insets = useSafeAreaInsets();
+  const [chats, setChats] = useState<any[]>([]);
 
-  const renderMessage = ({ item }) => (
-    <TouchableOpacity style={styles.messageRow}>
-      <View style={styles.avatarWrap}>
-        <Image source={{ uri: item.avatar }} style={styles.avatar} />
-        {item.unread && <View style={styles.unreadDot} />}
-      </View>
+  useEffect(() => {
+    const currentUid = auth.currentUser?.uid;
+    if (!currentUid) return;
 
-      <View style={styles.messageContent}>
-        <Text style={styles.messageName}>{item.name}</Text>
-        <Text style={styles.messagePreview}>{item.message}</Text>
-      </View>
+    const q = query(
+      collection(db, 'chats'),
+      where('participants', 'array-contains', currentUid),
+      orderBy('lastMessageAt', 'desc')
+    );
 
-      <Text style={styles.messageTime}>{item.time}</Text>
-    </TouchableOpacity>
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const chatList = snapshot.docs.map((doc) => ({
+        id: doc.id,
+        ...doc.data(),
+      }));
+
+      setChats(chatList);
+    });
+
+    return unsubscribe;
+  }, []);
+
+  const renderMessage = ({ item }: any) => {
+    const currentUid = auth.currentUser?.uid;
+    const participantDetails = item.participantDetails || {};
+    const entries = Object.entries(participantDetails) as [string, any][];
+
+    let displayUser: any = null;
+
+    const otherUserEntry = entries.find(([uid]) => uid !== currentUid);
+
+    if (otherUserEntry) {
+      displayUser = otherUserEntry[1];
+    } else {
+      displayUser = participantDetails[currentUid || ''];
+    }
+
+    const displayName = displayUser
+      ? `${displayUser.firstName || ''} ${displayUser.lastName || ''}`.trim()
+      : 'Unknown User';
+
+    const previewText = item.lastMessage?.trim()
+      ? item.lastMessage
+      : 'Start a conversation';
+
+    const timeText = formatMessageTime(item.lastMessageAt);
+
+    return (
+      <TouchableOpacity
+        style={styles.messageRow}
+        onPress={() =>
+          router.push({
+            pathname: '/(tabs)/groups/chat',
+            params: {
+              chatId: item.id,
+              name: displayName,
+            },
+          })
+        }
+      >
+        <View style={styles.avatarWrap}>
+          <View style={styles.avatar} />
+        </View>
+
+        <View style={styles.messageContent}>
+          <Text style={styles.messageName} numberOfLines={1}>
+            {displayName}
+          </Text>
+
+          <Text style={styles.messagePreview} numberOfLines={1}>
+            {previewText}
+          </Text>
+        </View>
+
+        <Text style={styles.messageTime}>
+          {timeText}
+        </Text>
+      </TouchableOpacity>
+    );
+  };
+
+  const renderEmptyState = () => (
+    <View style={styles.emptyState}>
+      <Ionicons name="chatbubbles-outline" size={54} color="#C9C9C9" />
+      <Text style={styles.emptyTitle}>No messages yet</Text>
+      <Text style={styles.emptySubtitle}>Start a conversation</Text>
+    </View>
   );
 
   return (
@@ -81,13 +130,16 @@ export default function GroupsScreen() {
 
       <SafeAreaView style={styles.container} edges={['bottom']}>
         <FlatList
-          data={messages}
+          data={chats}
           keyExtractor={(item) => item.id}
           renderItem={renderMessage}
           showsVerticalScrollIndicator={false}
+          contentContainerStyle={[
+            styles.listContent,
+            chats.length === 0 && styles.listContentEmpty,
+          ]}
           ListHeaderComponent={
             <>
-              {/* ORANGE HEADER */}
               <View style={[styles.header, { paddingTop: insets.top + 10 }]}>
                 <View style={styles.searchRow}>
                   <View style={styles.searchBar}>
@@ -99,19 +151,22 @@ export default function GroupsScreen() {
                     />
                   </View>
 
-                  <TouchableOpacity style={styles.composeButton}>
+                  <TouchableOpacity
+                    style={styles.composeButton}
+                    onPress={() => router.push('/(tabs)/groups/newmessage')}
+                  >
                     <Ionicons name="create-outline" size={22} color="#fff" />
                   </TouchableOpacity>
                 </View>
               </View>
 
-              {/* TITLE SECTION */}
               <View style={styles.titleSection}>
                 <Text style={styles.title}>Messages</Text>
-                <Text style={styles.subtitle}>You have 1 unread message</Text>
+                <Text style={styles.subtitle}>
+                  {chats.length > 0 ? 'Your conversations' : 'No conversations yet'}
+                </Text>
               </View>
 
-              {/* EMERGENCY GROUP CARD */}
               <TouchableOpacity
                 style={styles.groupCard}
                 onPress={() => router.push('/(tabs)/groups/emergency')}
@@ -126,21 +181,6 @@ export default function GroupsScreen() {
                     style={{ marginRight: 10 }}
                   />
 
-                  <View style={styles.avatarStack}>
-                    <Image
-                      source={{ uri: 'https://via.placeholder.com/40/8ec5ff' }}
-                      style={[styles.stackAvatar, { top: 0, left: 10 }]}
-                    />
-                    <Image
-                      source={{ uri: 'https://via.placeholder.com/40/ffd36e' }}
-                      style={[styles.stackAvatar, { top: 12, left: 16 }]}
-                    />
-                    <Image
-                      source={{ uri: 'https://via.placeholder.com/40/ff9f7a' }}
-                      style={[styles.stackAvatar, { top: 24, left: 4 }]}
-                    />
-                  </View>
-
                   <Text style={styles.groupText}>View Emergency Group</Text>
 
                   <Ionicons name="chevron-forward" size={22} color="#111" />
@@ -148,6 +188,7 @@ export default function GroupsScreen() {
               </TouchableOpacity>
             </>
           }
+          ListEmptyComponent={renderEmptyState}
         />
       </SafeAreaView>
     </>
@@ -157,7 +198,15 @@ export default function GroupsScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#F7F7F7',
+    backgroundColor: '#F3F3F3',
+  },
+
+  listContent: {
+    paddingBottom: 24,
+  },
+
+  listContentEmpty: {
+    flexGrow: 1,
   },
 
   header: {
@@ -199,9 +248,10 @@ const styles = StyleSheet.create({
   },
 
   titleSection: {
-    backgroundColor: '#fff',
+    backgroundColor: '#F3F3F3',
     paddingHorizontal: 16,
-    paddingVertical: 16,
+    paddingTop: 18,
+    paddingBottom: 14,
   },
 
   title: {
@@ -234,22 +284,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
   },
 
-  avatarStack: {
-    width: 40,
-    height: 56,
-    marginRight: 12,
-    position: 'relative',
-  },
-
-  stackAvatar: {
-    position: 'absolute',
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    borderWidth: 2,
-    borderColor: '#F5DFC2',
-  },
-
   groupText: {
     flex: 1,
     fontSize: 17,
@@ -260,43 +294,33 @@ const styles = StyleSheet.create({
   messageRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#fff',
-    paddingHorizontal: 16,
+    backgroundColor: '#F3F3F3',
+    paddingHorizontal: 14,
     paddingVertical: 14,
   },
 
   avatarWrap: {
     marginRight: 12,
-    position: 'relative',
   },
 
   avatar: {
     width: 56,
     height: 56,
     borderRadius: 28,
-    backgroundColor: '#DDD',
-  },
-
-  unreadDot: {
-    position: 'absolute',
-    top: 2,
-    right: 2,
-    width: 12,
-    height: 12,
-    borderRadius: 6,
-    backgroundColor: '#32CD32',
-    borderWidth: 2,
-    borderColor: '#fff',
+    backgroundColor: '#D8D8D8',
   },
 
   messageContent: {
     flex: 1,
+    justifyContent: 'center',
+    marginRight: 10,
   },
 
   messageName: {
     fontSize: 16,
     fontWeight: '700',
-    marginBottom: 3,
+    color: '#111',
+    marginBottom: 4,
   },
 
   messagePreview: {
@@ -307,5 +331,28 @@ const styles = StyleSheet.create({
   messageTime: {
     fontSize: 13,
     color: '#666',
+    alignSelf: 'flex-start',
+    marginTop: 4,
+  },
+
+  emptyState: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingBottom: 80,
+  },
+
+  emptyTitle: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: '#111',
+    marginTop: 14,
+  },
+
+  emptySubtitle: {
+    fontSize: 14,
+    color: '#8A8A8A',
+    marginTop: 6,
+    textAlign: 'center',
   },
 });
