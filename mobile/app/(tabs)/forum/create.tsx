@@ -21,7 +21,7 @@ import { createThread } from '@/lib/forumData';
 
 // ── Tag options ───────────────────────────────────────────────────────────────
 
-const TAG_OPTIONS = ['Question', 'Self Report', 'Resources', 'Update', 'Official'];
+const TAG_OPTIONS = ['Wildfire', 'Question', 'Self Report', 'Resources', 'Update'];
 const MAX_TAGS = 3;
 
 // ── Screen ────────────────────────────────────────────────────────────────────
