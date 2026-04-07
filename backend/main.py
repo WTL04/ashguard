@@ -201,9 +201,12 @@ async def fetch_weather_data() -> dict:
 
     # Filter out stations that returned None (404s, no temperature data, etc.)
     features = [r for r in results if r is not None]
-
+ 
     logger.info(f"Weather fetch complete: {len(features)} stations with valid data.")
-    return {"type": "FeatureCollection", "features": features}(state: str | None = None) -> dict:
+    return {"type": "FeatureCollection", "features": features}
+
+
+async def fetch_satellite_api(state: str | None = None) -> dict:
     """
     Returns GeoJSON FeatureCollection of satellite detected hotspots from 3 satellite sources.
     Set state="CA" for California only, otherwise returns global data.
