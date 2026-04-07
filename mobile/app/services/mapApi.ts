@@ -6,6 +6,12 @@ export const fetchFireData = async () => {
   return res.json();
 };
 
+export const fetchWeatherData = async () => {
+    const res = await fetch(`${BASE_URL}/api/v1/weather`);
+    if (!res.ok) throw new Error(`HTTP error: ${res.status}`);
+    return res.json();
+};
+
 export const checkCacheHealth = async () => {
     const res = await fetch(`${BASE_URL}/api/v1/cache/status`);
     if (!res.ok) throw new Error(`HTTP error: ${res.status}`);
