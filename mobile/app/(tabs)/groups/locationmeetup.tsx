@@ -6,13 +6,13 @@ import {
   TouchableOpacity,
   TextInput,
   FlatList,
-  Image,
   Alert,
-  Dimensions,
   Animated,
   PanResponder,
 } from 'react-native';
-import MapView, { Marker, MapPressEvent, Region } from 'react-native-maps';
+import * as MapLibreRN from "@maplibre/maplibre-react-native";
+import { Camera, type CameraRef, ShapeSource, CircleLayer } from "@maplibre/maplibre-react-native";
+const { MapView } = MapLibreRN;
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { Ionicons } from '@expo/vector-icons';
@@ -57,14 +57,9 @@ type PlaceholderMember = {
   avatar: string;
 };
 
-const FALLBACK_REGION: Region = {
-  latitude: 37.7749,
-  longitude: -122.4194,
-  latitudeDelta: 0.04,
-  longitudeDelta: 0.04,
-};
+const FALLBACK_COORDS: [number, number] = [-122.4194, 37.7749];
+const DEFAULT_ZOOM = 12;
 
-const SCREEN_HEIGHT = Dimensions.get('window').height;
 const SHEET_EXPANDED = 0;
 const SHEET_COLLAPSED = 230;
 
@@ -107,16 +102,22 @@ function buildPlaceholderMembers(center: LatLng): PlaceholderMember[] {
   ];
 }
 
+function latLngToCoords(latlng: LatLng): [number, number] {
+  return [latlng.longitude, latlng.latitude];
+}
+
 export default function LocationMeetupScreen() {
   const insets = useSafeAreaInsets();
-  const mapRef = useRef<MapView | null>(null);
+  const cameraRef = useRef<CameraRef>(null);
 
+  const [mapReady, setMapReady] = useState(false);
   const [groupName, setGroupName] = useState('Name of Group');
-  const [region, setRegion] = useState<Region>(FALLBACK_REGION);
+  const [defaultCenter, setDefaultCenter] = useState<[number, number]>(FALLBACK_COORDS);
+  const [defaultZoom, setDefaultZoom] = useState<number>(DEFAULT_ZOOM);
   const [memberPins, setMemberPins] = useState<PlaceholderMember[]>(
     buildPlaceholderMembers({
-      latitude: FALLBACK_REGION.latitude,
-      longitude: FALLBACK_REGION.longitude,
+      latitude: FALLBACK_COORDS[1],
+      longitude: FALLBACK_COORDS[0],
     })
   );
 
@@ -134,6 +135,12 @@ export default function LocationMeetupScreen() {
   useEffect(() => {
     loadSavedData();
   }, []);
+
+  useEffect(() => {
+    if (mapReady && defaultCenter) {
+      cameraRef.current?.flyTo(defaultCenter, 700);
+    }
+  }, [mapReady, defaultCenter]);
 
   const panResponder = useRef(
     PanResponder.create({
@@ -205,33 +212,17 @@ export default function LocationMeetupScreen() {
         setMeetupCoords(parsed);
       }
 
-      const nextRegion: Region = {
-        latitude: userCoords.latitude,
-        longitude: userCoords.longitude,
-        latitudeDelta: 0.04,
-        longitudeDelta: 0.04,
-      };
-
-      setRegion(nextRegion);
+      const nextCenter: [number, number] = [userCoords.longitude, userCoords.latitude];
+      setDefaultCenter(nextCenter);
       setMemberPins(buildPlaceholderMembers(userCoords));
-
-      requestAnimationFrame(() => {
-        mapRef.current?.animateToRegion(nextRegion, 700);
-      });
     } catch (error) {
       console.log('Error loading meetup data:', error);
 
-      const fallback = {
-        latitude: FALLBACK_REGION.latitude,
-        longitude: FALLBACK_REGION.longitude,
-      };
-
-      setRegion(FALLBACK_REGION);
-      setMemberPins(buildPlaceholderMembers(fallback));
-
-      requestAnimationFrame(() => {
-        mapRef.current?.animateToRegion(FALLBACK_REGION, 700);
-      });
+      setDefaultCenter(FALLBACK_COORDS);
+      setMemberPins(buildPlaceholderMembers({
+        latitude: FALLBACK_COORDS[1],
+        longitude: FALLBACK_COORDS[0],
+      }));
     }
   };
 
@@ -241,8 +232,8 @@ export default function LocationMeetupScreen() {
 
       if (permission.status !== 'granted') {
         return {
-          latitude: FALLBACK_REGION.latitude,
-          longitude: FALLBACK_REGION.longitude,
+          latitude: FALLBACK_COORDS[1],
+          longitude: FALLBACK_COORDS[0],
         };
       }
 
@@ -257,8 +248,8 @@ export default function LocationMeetupScreen() {
     } catch (error) {
       console.log('Error getting current location:', error);
       return {
-        latitude: FALLBACK_REGION.latitude,
-        longitude: FALLBACK_REGION.longitude,
+        latitude: FALLBACK_COORDS[1],
+        longitude: FALLBACK_COORDS[0],
       };
     }
   };
@@ -276,23 +267,21 @@ export default function LocationMeetupScreen() {
   };
 
   const animateTo = (coords: LatLng) => {
-    const nextRegion: Region = {
-      latitude: coords.latitude,
-      longitude: coords.longitude,
-      latitudeDelta: 0.02,
-      longitudeDelta: 0.02,
-    };
-
-    setRegion(nextRegion);
-    mapRef.current?.animateToRegion(nextRegion, 500);
+    const mapCoords: [number, number] = [coords.longitude, coords.latitude];
+    setDefaultCenter(mapCoords);
+    setDefaultZoom(14);
+    cameraRef.current?.flyTo(mapCoords, 500);
   };
 
-  const handleMapPress = async (event: MapPressEvent) => {
-    const coords = event.nativeEvent.coordinate;
-    const fallbackAddress = `${coords.latitude.toFixed(5)}, ${coords.longitude.toFixed(5)}`;
+  const handleMapPress = async (e: any) => {
+    const coords = e.geometry?.coordinates ?? e.nativeEvent?.geometry?.coordinates;
+    if (!coords || coords.length < 2) return;
+    const lng = coords[0];
+    const lat = coords[1];
+    const fallbackAddress = `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
 
-    await saveMeetup(fallbackAddress, coords);
-    animateTo(coords);
+    await saveMeetup(fallbackAddress, { latitude: lat, longitude: lng });
+    animateTo({ latitude: lat, longitude: lng });
   };
 
   const fetchPhotonSuggestions = async (input: string) => {
@@ -308,7 +297,7 @@ export default function LocationMeetupScreen() {
 
       const url =
         `https://photon.komoot.io/api/?q=${encodeURIComponent(input)}` +
-        `&limit=6&lat=${region.latitude}&lon=${region.longitude}`;
+        `&limit=6&lat=${defaultCenter[1]}&lon=${defaultCenter[0]}`;
 
       const response = await fetch(url);
       const data = await response.json();
@@ -363,6 +352,40 @@ export default function LocationMeetupScreen() {
     router.back();
   };
 
+  const membersGeoJSON: GeoJSON.FeatureCollection = {
+    type: 'FeatureCollection',
+    features: memberPins.map((member) => ({
+      type: 'Feature',
+      properties: {
+        id: member.id,
+        name: member.name,
+        avatar: member.avatar,
+      },
+      geometry: {
+        type: 'Point',
+        coordinates: latLngToCoords(member.coordinate),
+      },
+    })),
+  };
+
+  const meetupGeoJSON: GeoJSON.FeatureCollection = meetupCoords
+    ? {
+        type: 'FeatureCollection',
+        features: [
+          {
+            type: 'Feature',
+            properties: {},
+            geometry: {
+              type: 'Point',
+              coordinates: latLngToCoords(meetupCoords),
+            },
+          },
+        ],
+      }
+    : { type: 'FeatureCollection', features: [] };
+
+  const map_light_mode = "https://basemaps.cartocdn.com/gl/voyager-gl-style/style.json"
+
   return (
     <>
       <StatusBar style="light" backgroundColor="#F58500" />
@@ -384,29 +407,50 @@ export default function LocationMeetupScreen() {
 
           <View style={styles.mapWrap}>
             <MapView
-              ref={mapRef}
-              style={styles.map}
-              region={region}
+              style={StyleSheet.absoluteFill}
+              mapStyle={map_light_mode}
+              onDidFinishLoadingMap={() => setMapReady(true)}
               onPress={handleMapPress}
-              showsUserLocation
+              compassEnabled={false}
+              attributionEnabled={false}
             >
-              {memberPins.map((member) => (
-                <Marker
-                  key={member.id}
-                  coordinate={member.coordinate}
-                  title={member.name}
-                >
-                  <View style={styles.memberMarker}>
-                    <Image source={{ uri: member.avatar }} style={styles.memberAvatar} />
-                  </View>
-                </Marker>
-              ))}
+              <Camera
+                ref={cameraRef}
+                defaultSettings={{
+                  centerCoordinate: defaultCenter,
+                  zoomLevel: defaultZoom,
+                }}
+              />
 
-              {meetupCoords && (
-                <Marker coordinate={meetupCoords} title="Emergency Meetup Spot">
-                  <Ionicons name="location" size={42} color="#F58500" />
-                </Marker>
-              )}
+              <ShapeSource
+                id="member-pins"
+                shape={membersGeoJSON}
+              >
+                <CircleLayer
+                  id="member-pins-layer"
+                  style={{
+                    circleColor: '#F58500',
+                    circleRadius: 10,
+                    circleStrokeWidth: 3,
+                    circleStrokeColor: '#FFFFFF',
+                  }}
+                />
+              </ShapeSource>
+
+              <ShapeSource
+                id="meetup-pin"
+                shape={meetupGeoJSON}
+              >
+                <CircleLayer
+                  id="meetup-pin-layer"
+                  style={{
+                    circleColor: '#2563EB',
+                    circleRadius: 12,
+                    circleStrokeWidth: 3,
+                    circleStrokeColor: '#FFFFFF',
+                  }}
+                />
+              </ShapeSource>
             </MapView>
 
             {showSearchCard && (
@@ -526,26 +570,6 @@ const styles = StyleSheet.create({
   mapWrap: {
     flex: 1,
     position: 'relative',
-  },
-  map: {
-    width: '100%',
-    height: '100%',
-  },
-  memberMarker: {
-    width: 52,
-    height: 52,
-    borderRadius: 26,
-    backgroundColor: '#fff',
-    borderWidth: 3,
-    borderColor: '#F58500',
-    alignItems: 'center',
-    justifyContent: 'center',
-    overflow: 'hidden',
-  },
-  memberAvatar: {
-    width: 46,
-    height: 46,
-    borderRadius: 23,
   },
   bottomPanel: {
     position: 'absolute',
