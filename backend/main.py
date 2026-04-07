@@ -13,6 +13,7 @@ from datetime import date
 import pandas as pd
 from io import StringIO
 import httpx
+import aiohttp
 
 load_dotenv()
 
@@ -21,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 CACHE_KEY = "ashguard:latest_fire_data"
+WEATHER_CACHE_KEY = "ashguard:latest_weather_data"
 CACHE_TTL = 300  # seconds before cache expires
 POLL_INTERVAL = 300  # how often the background worker refreshes
 
@@ -36,6 +38,11 @@ class FireDataResponse(BaseModel):
     satellite_hotspots: dict
     fire_perimeters: dict
     prescribed_fires: dict
+
+
+class WeatherDataResponse(BaseModel):
+    # GeoJSON FeatureCollection of California weather stations
+    weather_stations: dict
 
 
 class CacheStatusResponse(BaseModel):
@@ -83,7 +90,119 @@ def dicts_to_geojson(data_list: list) -> dict:
 """
 
 
-async def fetch_satellite_api(state: str | None = None) -> dict:
+# Patrick Clarke
+# California weather station IDs (NWS METAR)
+CALIFORNIA_STATION_IDS = [
+    "KNGZ", "KAAT", "KAPV", "KACV", "KAUN", "KAVX", "KBFL", "KBAB", "KBUO", "KBYS",
+    "KL35", "KBIH", "KBLH", "KL08", "KO57", "KBAN", "KBUR", "KBNY", "KC83", "KCXL",
+    "KCMA", "KCZZ", "KNFG", "KCRQ", "KO59", "KCIC", "KNID", "KCNO", "KO22", "KCCR",
+    "KAJO", "KSNA", "KCEC", "KDAG", "KDWA", "KEDU", "KDLO", "KEDW", "K9L2", "KNJK",
+    "KEMT", "KBLU", "KEKA", "KL18", "KFOT", "KFCH", "KFAT", "KFUL", "KGOO", "KHAF",
+    "KHJO", "KO18", "KHHR", "KHWD", "KHES", "KHMT", "KCVH", "KHGT", "KNRS", "KIPL",
+    "KIYK", "KJAQ", "KWJF", "KPOC", "KWHP", "KNLC", "KLHM", "KLLR", "KLVK", "KLPC",
+    "KLGB", "KSLI", "KCQT", "KLAX", "KMAE", "KMMH", "KMYV", "KMHR", "KMCC", "KMER",
+    "KMCE", "KNKX", "KMOD", "KNUQ", "KMHV", "KSIY", "KMRY", "KMHS", "KMWS", "KF70",
+    "KAPC", "KEED", "K3A6", "KNZY", "KDVO", "KOAK", "KL52", "KOKB", "KNXF", "KONT",
+    "KOVE", "KOXR", "KGXA", "KPMD", "KPSP", "KPAO", "KPRB", "KO69", "KPVF", "KNTD",
+    "KPTV", "K87Q", "KRNM", "KRBL", "KRDD", "KREI", "KO32", "KO88", "KRAL", "KRIV",
+    "KSAC", "KSMF", "KSNS", "KCPU", "KSBD", "KSQL", "KNUC", "KSDB", "KSDM", "KSAN",
+    "KMYF", "KSEE", "KSFO", "KSJC", "KRHV", "KSBP", "KE16", "KNSI", "KSBA", "KSMX",
+    "KSMO", "KSTS", "KIZA", "KO87", "KTVL", "KSCK", "KSVE", "KTSP", "KTRM", "KTOA",
+    "KTCY", "KSUU", "KO86", "KTRK", "KNXP", "KUKI", "KCCB", "KVCB", "KVBG", "KXVW",
+    "KVNY", "KVCV", "KVIS", "KWVI", "KO54"
+]
+
+NWS_HEADERS = {
+    "User-Agent": "AshGuard/1.0 (ashguard-project@example.com)",
+    "Accept": "application/geo+json",
+}
+
+
+async def fetch_single_station(
+    session: aiohttp.ClientSession,
+    station_id: str,
+    semaphore: asyncio.Semaphore,
+) -> dict | None:
+    """
+    Fetches the most recent valid observation for one NWS station.
+    Returns a GeoJSON Feature, or None if the station has no usable data.
+    """
+    async with semaphore:
+        url = f"https://api.weather.gov/stations/{station_id}/observations"
+        try:
+            await asyncio.sleep(0.2)  # small delay to stay within NWS rate limits
+            async with session.get(url, headers=NWS_HEADERS, ssl=False) as response:
+                response.raise_for_status()
+                data = await response.json(content_type=None)
+
+                # Find the newest observation that actually has a temperature
+                best_obs = next(
+                    (
+                        obs
+                        for obs in data.get("features", [])
+                        if obs.get("properties", {})
+                        .get("temperature", {})
+                        .get("value")
+                        is not None
+                    ),
+                    None,
+                )
+
+                if best_obs is None:
+                    return None
+
+                props = best_obs.get("properties", {})
+                coords = best_obs.get("geometry", {}).get("coordinates", [None, None])
+
+                return {
+                    "type": "Feature",
+                    "geometry": {
+                        "type": "Point",
+                        "coordinates": coords,  # [lon, lat] — standard GeoJSON order
+                    },
+                    "properties": {
+                        "stationId": station_id,
+                        "stationName": props.get("stationName", station_id),
+                        "temperature": props.get("temperature", {}).get("value"),
+                        "relativeHumidity": props.get("relativeHumidity", {}).get("value"),
+                        "dewpoint": props.get("dewpoint", {}).get("value"),
+                        "windSpeed": props.get("windSpeed", {}).get("value"),
+                        "timestamp": props.get("timestamp"),
+                    },
+                }
+
+        except aiohttp.ClientResponseError as e:
+            logger.warning(f"HTTP {e.status} for station {station_id}")
+            return None
+        except Exception as e:
+            logger.warning(f"Error fetching station {station_id}: {e}")
+            return None
+
+
+async def fetch_weather_data() -> dict:
+    """
+    Fetches current weather observations for all California NWS stations
+    and returns a GeoJSON FeatureCollection.
+
+    Uses async + semaphore (same pattern as get-metar.py) so all 165
+    stations are fetched concurrently without hammering the NWS API.
+    """
+    logger.info(f"Fetching weather data for {len(CALIFORNIA_STATION_IDS)} CA stations...")
+
+    semaphore = asyncio.Semaphore(5)  # max 5 concurrent NWS requests at once
+
+    async with aiohttp.ClientSession() as session:
+        tasks = [
+            fetch_single_station(session, station_id, semaphore)
+            for station_id in CALIFORNIA_STATION_IDS
+        ]
+        results = await asyncio.gather(*tasks)
+
+    # Filter out stations that returned None (404s, no temperature data, etc.)
+    features = [r for r in results if r is not None]
+
+    logger.info(f"Weather fetch complete: {len(features)} stations with valid data.")
+    return {"type": "FeatureCollection", "features": features}(state: str | None = None) -> dict:
     """
     Returns GeoJSON FeatureCollection of satellite detected hotspots from 3 satellite sources.
     Set state="CA" for California only, otherwise returns global data.
@@ -226,6 +345,7 @@ async def fetch_2026_Year_to_Date_fire_perimeters() -> dict:
 async def data_ingestion_worker():
     while True:
         try:
+            # --- Fire data (unchanged) ---
             (
                 satellite_hotspots,
                 fire_perimeters,
@@ -245,7 +365,13 @@ async def data_ingestion_worker():
                 }
             )
             await redis_client.setex(CACHE_KEY, CACHE_TTL, payload)
-            logger.info("Cache updated with real API data.")
+            logger.info("Fire cache updated.")
+
+            # --- Weather data (new) ---
+            weather_stations = await fetch_weather_data()
+            weather_payload = json.dumps({"weather_stations": weather_stations})
+            await redis_client.setex(WEATHER_CACHE_KEY, CACHE_TTL, weather_payload)
+            logger.info("Weather cache updated.")
 
             await asyncio.sleep(POLL_INTERVAL)
 
@@ -317,6 +443,18 @@ async def get_cached_fires():
     )
 
 
+@app.get("/api/v1/weather", response_model=WeatherDataResponse)
+async def get_cached_weather():
+    """Returns California weather station data from Redis cache."""
+    raw = await redis_client.get(WEATHER_CACHE_KEY)
+    if raw:
+        return json.loads(raw)
+    return JSONResponse(
+        status_code=503,
+        content={"detail": "Weather data not yet available, retry shortly"},
+    )
+
+
 # FIX: response_model wired up
 @app.get("/api/v1/cache/status", response_model=CacheStatusResponse)
 async def cache_status():
@@ -345,4 +483,5 @@ async def cache_status():
 async def flush_cache():
     """Clears the cache — useful for testing."""
     await redis_client.delete(CACHE_KEY)
+    await redis_client.delete(WEATHER_CACHE_KEY)
     return {"message": "Cache cleared"}
