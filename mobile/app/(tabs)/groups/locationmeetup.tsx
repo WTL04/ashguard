@@ -122,7 +122,7 @@ export default function LocationMeetupScreen() {
   const [mapReady, setMapReady] = useState(false);
   const [mapLoadCount, setMapLoadCount] = useState(0);
   const [locationResolved, setLocationResolved] = useState(false);
-
+  
   const [groupName, setGroupName] = useState('Name of Group');
   const [memberPins, setMemberPins] = useState<PlaceholderMember[]>(
     buildPlaceholderMembers({

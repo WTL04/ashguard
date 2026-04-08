@@ -1,7 +1,4 @@
 // lib/forumData.ts
-// Shared types and Firestore helpers for the forum.
-// Place this file at:  <project-root>/lib/forumData.ts
-
 import {
   collection,
   addDoc,
@@ -12,38 +9,34 @@ import {
   serverTimestamp,
   Timestamp,
 } from 'firebase/firestore';
-import { db } from '@/lib/firebaseConfig'; // adjust path if your firebase init lives elsewhere
-
-// ── Types ─────────────────────────────────────────────────────────────────────
+import { db } from '@/lib/firebaseConfig';
 
 export type ThreadType = 'official' | 'wildfire' | 'prescribed' | 'resource' | 'question';
 
 export interface ForumThread {
-  id: string;                 // Firestore document id
+  id: string;
   type: ThreadType;
   distance: string;
   title?: string;
   pinned?: boolean;
   authorId: string;
   authorUsername: string;
-  authorDate: string;         // human-readable, derived from createdAt
+  authorDate: string;
   body: string;
-  tags: string[];             // array of tag label strings
+  tags: string[];
   createdAt: Timestamp | null;
 }
 
 export interface ForumComment {
   id: string;
-  parentId: string | null;    // null = top-level comment
+  parentId: string | null;
   authorId: string;
   authorUsername: string;
   avatarColor: string;
   text: string;
   createdAt: Timestamp | null;
-  timeAgo: string;            // derived on client from createdAt
+  timeAgo: string;
 }
-
-// ── Display config ────────────────────────────────────────────────────────────
 
 export const TYPE_LABEL: Record<ThreadType, string> = {
   official:   'Official Notice',
@@ -60,11 +53,9 @@ export const OFFICIAL_STYLE = {
   tagColor: '#B45309',
 };
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
 /** Derive a ThreadType from an array of tag labels. */
 export function tagsToType(tags: string[]): ThreadType {
-  if (tags.includes('Official'))  return 'official';
+  if (tags.includes('Wildfire'))  return 'wildfire';
   if (tags.includes('Resources')) return 'resource';
   if (tags.includes('Question'))  return 'question';
   return 'wildfire';
@@ -105,12 +96,6 @@ export function dateGroupLabel(ts: Timestamp | null): string {
   return d.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
 }
 
-// ── Firestore reads ───────────────────────────────────────────────────────────
-
-/**
- * Subscribe to all threads in real-time, ordered newest-first.
- * Returns an unsubscribe function.
- */
 export function subscribeToThreads(
   onData: (threads: ForumThread[]) => void,
 ): () => void {
@@ -137,10 +122,6 @@ export function subscribeToThreads(
   });
 }
 
-/**
- * Subscribe to comments for a thread in real-time, ordered oldest-first.
- * Returns an unsubscribe function.
- */
 export function subscribeToComments(
   threadId: string,
   onData: (comments: ForumComment[]) => void,
@@ -168,12 +149,6 @@ export function subscribeToComments(
   });
 }
 
-// ── Firestore writes ──────────────────────────────────────────────────────────
-
-/**
- * Create a new thread document in Firestore.
- * Returns the new document id.
- */
 export async function createThread(params: {
   title: string;
   address: string;
@@ -186,7 +161,7 @@ export async function createThread(params: {
   const type = tagsToType(params.tags);
   const ref = await addDoc(collection(db, 'threads'), {
     type,
-    distance: '—',                  // real distance requires geolocation — hook up later
+    distance: '—',
     title: params.title || null,
     pinned: false,
     authorId: params.authorId,
@@ -200,9 +175,6 @@ export async function createThread(params: {
   return ref.id;
 }
 
-/**
- * Post a comment (or reply) on a thread.
- */
 export async function postComment(params: {
   threadId: string;
   parentId: string | null;

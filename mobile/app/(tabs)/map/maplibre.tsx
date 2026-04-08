@@ -16,7 +16,7 @@ import * as MapLibreRN from "@maplibre/maplibre-react-native";
 import { Camera, UserLocation, type CameraRef, ShapeSource, FillLayer, LineLayer, SymbolLayer, CircleLayer } from "@maplibre/maplibre-react-native";
 const { MapView } = MapLibreRN;
 import { Colors } from '@/constants/colors';
-import { fetchFireData } from "../services/mapApi";
+import { fetchFireData, fetchWeatherData } from "../../services/mapApi";
 
 // ── Filter chip config ───────────────────────────────────────────────────────
 const FILTERS = [
@@ -25,6 +25,7 @@ const FILTERS = [
   { id: 'perimeters',      label: 'Fire Perimeters',  icon: 'flame-outline' },
   { id: 'hotspots',        label: 'Satellite Hotspots', icon: 'radio-outline' },
   { id: 'prescribed',      label: 'Prescribed Fires', icon: 'leaf-outline' },
+  { id: 'weather',         label: 'Weather Stations', icon: 'partly-sunny-outline' },
   { id: 'shelters',        label: 'Shelters',         icon: 'home-outline' },
   { id: 'food',            label: 'Food Banks',       icon: 'fast-food-outline' },
 ] as const;
@@ -33,13 +34,17 @@ type FilterId = typeof FILTERS[number]['id'];
 
 // California center
 const CA_CENTER: [number, number] = [-119.4179, 36.7783];
-const CA_ZOOM = 13;
+const CA_ZOOM = 6;
 
 const CONFIDENCE_MAP: Record<string, string> = {
   "H": 'High',
   "M": 'Medium',
   "L": 'Low',
 };
+
+// Unit conversion helpers
+const celsiusToFahrenheit = (c: number): string => `${((c * 9) / 5 + 32).toFixed(1)} °F`;
+const kmhToMph = (kmh: number): string => `${(kmh * 0.621371).toFixed(1)} mph`;
 
 export default function MapLibre() {
   const cameraRef = useRef<CameraRef>(null);
@@ -58,17 +63,46 @@ export default function MapLibre() {
   const [firesError, setFiresError] = useState<string | null>(null);
   const [selectedFire, setSelectedFire] = useState<GeoJSON.Feature | null>(null);
 
+  // Weather state
+  const [weatherData, setWeatherData] = useState<GeoJSON.FeatureCollection | null>(null);
+  const [weatherLoading, setWeatherLoading] = useState(false);
+  const [weatherError, setWeatherError] = useState<string | null>(null);
+  const [selectedStation, setSelectedStation] = useState<GeoJSON.Feature | null>(null);
+
   // Request location permission
   useEffect(() => {
     (async () => {
-      const { status } = await Location.requestForegroundPermissionsAsync();
-      if (status === 'granted') {
+      try {
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (status !== 'granted') return;
         setLocationGranted(true);
-        const loc = await Location.getCurrentPositionAsync({});
-        setUserCoords([loc.coords.longitude, loc.coords.latitude]);
+        try {
+          const loc = await Location.getCurrentPositionAsync({
+            accuracy: Location.Accuracy.Low,
+          });
+          setUserCoords([loc.coords.longitude, loc.coords.latitude]);
+        } catch {
+          // GPS unavailable on emulator — fall back to CA center silently
+          console.warn('GPS unavailable, defaulting to California center');
+        }
+      } catch (err) {
+        console.warn('Location permission error:', err);
       }
     })();
   }, []);
+
+  // Once map is ready, fly to user location if we have it, otherwise stay on CA
+  useEffect(() => {
+    if (!mapReady || !cameraRef.current) return;
+    if (userCoords) {
+      cameraRef.current.setCamera({
+        centerCoordinate: userCoords,
+        zoomLevel: 13,
+        animationMode: 'flyTo',
+        animationDuration: 800,
+      });
+    }
+  }, [mapReady, userCoords]);
 
   // Fetch and separate fire data into individual collections
   useEffect(() => {
@@ -113,6 +147,26 @@ export default function MapLibre() {
       });
   }, [mapReady]);
 
+  // Fetch weather station data
+  useEffect(() => {
+    if (!mapReady) return;
+    setWeatherLoading(true);
+    setWeatherError(null);
+    fetchWeatherData()
+      .then((data) => {
+        setWeatherData({
+          type: 'FeatureCollection',
+          features: data.weather_stations?.features ?? [],
+        });
+        setWeatherLoading(false);
+      })
+      .catch((err) => {
+        console.error('Failed to fetch weather data:', err);
+        setWeatherError('Failed to load weather data');
+        setWeatherLoading(false);
+      });
+  }, [mapReady]);
+
   const getFeatureCenter = (feature: GeoJSON.Feature): [number, number] | null => {
     const geom = feature.geometry;
     if (!geom) return null;
@@ -122,8 +176,8 @@ export default function MapLibre() {
     }
 
     if (geom.type === 'Polygon' || geom.type === 'MultiPolygon') {
-      const coords = geom.type === 'Polygon' 
-        ? geom.coordinates[0] 
+      const coords = geom.type === 'Polygon'
+        ? geom.coordinates[0]
         : geom.coordinates[0][0];
       let sumLng = 0, sumLat = 0;
       for (const coord of coords) {
@@ -137,6 +191,7 @@ export default function MapLibre() {
   };
 
   const handleFirePress = (feature: GeoJSON.Feature) => {
+    setSelectedStation(null); // close weather popup if open
     setSelectedFire(feature);
     const center = getFeatureCenter(feature);
     if (center && cameraRef.current) {
@@ -144,9 +199,32 @@ export default function MapLibre() {
     }
   };
 
+  const handleStationPress = (feature: GeoJSON.Feature) => {
+    setSelectedFire(null); // close fire popup if open
+    setSelectedStation(feature);
+    const center = getFeatureCenter(feature);
+    if (center && cameraRef.current) {
+      cameraRef.current.flyTo(center, 500);
+    }
+  };
+
   const handleLocateMe = () => {
-    if (!userCoords || !cameraRef.current) return;
-    cameraRef.current.flyTo(userCoords, 600);
+    if (!cameraRef.current) return;
+    if (userCoords) {
+      cameraRef.current.setCamera({
+        centerCoordinate: userCoords,
+        zoomLevel: 13,
+        animationMode: 'flyTo',
+        animationDuration: 600,
+      });
+    } else {
+      cameraRef.current.setCamera({
+        centerCoordinate: CA_CENTER,
+        zoomLevel: CA_ZOOM,
+        animationMode: 'flyTo',
+        animationDuration: 600,
+      });
+    }
   };
 
   // Set user location, use California coords if UserLocation doesnt work
@@ -154,10 +232,11 @@ export default function MapLibre() {
     ? { centerCoordinate: userCoords, zoomLevel: 13 }
     : { centerCoordinate: CA_CENTER, zoomLevel: CA_ZOOM };
 
-  // Counts for each fire data type
+  // Counts for each data type
   const hotspotsCount = hotspotsData?.features.length ?? 0;
   const perimetersCount = perimetersData?.features.length ?? 0;
   const prescribedCount = prescribedData?.features.length ?? 0;
+  const weatherCount = weatherData?.features.length ?? 0;
 
   const map_light_mode = "https://basemaps.cartocdn.com/gl/voyager-gl-style/style.json"
   const map_dark_mode = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json"
@@ -172,7 +251,10 @@ export default function MapLibre() {
         compassEnabled={false}
         attributionEnabled={false}
       >
-        <Camera ref={cameraRef} defaultSettings={defaultSettings} />
+        <Camera
+          ref={cameraRef}
+          defaultSettings={{ centerCoordinate: CA_CENTER, zoomLevel: CA_ZOOM }}
+        />
         {locationGranted && <UserLocation visible={locationGranted} />}
 
         {/* Satellite Hotspots Layer - orange circles */}
@@ -232,6 +314,26 @@ export default function MapLibre() {
             />
           </ShapeSource>
         )}
+
+        {/* Weather Stations Layer - blue circles */}
+        {(activeFilter === 'all' || activeFilter === 'weather') && weatherData && (
+          <ShapeSource
+            id="weather-data"
+            shape={weatherData}
+            onPress={(e) => handleStationPress(e.features[0])}
+          >
+            <CircleLayer
+              id="weather-layer"
+              style={{
+                circleColor: '#3B82F6',
+                circleRadius: 5,
+                circleOpacity: 0.9,
+                circleStrokeWidth: 1.5,
+                circleStrokeColor: '#FFFFFF',
+              }}
+            />
+          </ShapeSource>
+        )}
       </MapView>
 
       {/* Loading overlay */}
@@ -268,8 +370,8 @@ export default function MapLibre() {
         >
           {FILTERS.map((f) => {
             const active = activeFilter === f.id;
-            // Determine badge count and style for each fire-related filter
             const isFireFilter = ['hotspots', 'perimeters', 'prescribed'].includes(f.id);
+            const isWeatherFilter = f.id === 'weather';
             let badgeCount = 0;
             let badgeStyle = styles.badge;
             let badgeTextStyle = styles.badgeText;
@@ -290,6 +392,11 @@ export default function MapLibre() {
               badgeStyle = styles.badgePrescribed;
               badgeTextStyle = styles.badgePrescribedText;
               badgeActiveStyle = styles.badgePrescribedActive;
+            } else if (f.id === 'weather') {
+              badgeCount = weatherCount;
+              badgeStyle = styles.badgeWeather;
+              badgeTextStyle = styles.badgeWeatherText;
+              badgeActiveStyle = styles.badgeActive;
             }
 
             return (
@@ -322,6 +429,20 @@ export default function MapLibre() {
                     style={{ marginLeft: 4 }}
                   />
                 )}
+                {isWeatherFilter && !weatherLoading && !weatherError && badgeCount > 0 && (
+                  <View style={[badgeStyle, active && badgeActiveStyle]}>
+                    <Text style={[badgeTextStyle, active && styles.badgeTextActive]}>
+                      {badgeCount}
+                    </Text>
+                  </View>
+                )}
+                {isWeatherFilter && weatherLoading && (
+                  <ActivityIndicator
+                    size="small"
+                    color={active ? '#fff' : Colors.primary}
+                    style={{ marginLeft: 4 }}
+                  />
+                )}
               </TouchableOpacity>
             );
           })}
@@ -340,9 +461,8 @@ export default function MapLibre() {
           </TouchableOpacity>
 
           <TouchableOpacity
-            style={[styles.fabBtn, !locationGranted && { opacity: 0.4 }]}
+            style={styles.fabBtn}
             onPress={handleLocateMe}
-            disabled={!locationGranted}
             activeOpacity={0.85}
           >
             <Ionicons name="locate-outline" size={20} color={Colors.primary} />
@@ -398,7 +518,6 @@ export default function MapLibre() {
               </Text>
             )}
 
-
             {/* Fire Perimeter Pop Up */}
             {selectedFire.properties?.poly_IncidentName && (
               <Text style={styles.popupDetail}>
@@ -445,7 +564,53 @@ export default function MapLibre() {
                 ✅ Contained On: {new Date(selectedFire.properties.attr_ContainmentDateTime).toLocaleDateString()}
               </Text>
             )}
+          </View>
+        )}
 
+        {/* ── Weather station popup ──────────────────────────────────────── */}
+        {selectedStation && (
+          <View style={styles.popup} pointerEvents="box-none">
+            <TouchableOpacity
+              style={[styles.popupClose, { padding: 8, marginRight: -8, marginTop: -8 }]}
+              onPress={() => setSelectedStation(null)}
+            >
+              <Ionicons name="close" size={24} color="#374151" />
+            </TouchableOpacity>
+
+            <Text style={styles.popupTitle}>
+              🌤️ {selectedStation.properties?.stationName ?? selectedStation.properties?.stationId}
+            </Text>
+
+            <View style={styles.popupDivider} />
+
+            <Text style={styles.popupDetail}>
+              📡 Station ID: {selectedStation.properties?.stationId}
+            </Text>
+            {selectedStation.properties?.temperature != null && (
+              <Text style={styles.popupDetail}>
+                🌡️ Temperature: {celsiusToFahrenheit(selectedStation.properties.temperature)}
+              </Text>
+            )}
+            {selectedStation.properties?.relativeHumidity != null && (
+              <Text style={styles.popupDetail}>
+                💧 Humidity: {selectedStation.properties.relativeHumidity.toFixed(1)} %
+              </Text>
+            )}
+            {selectedStation.properties?.dewpoint != null && (
+              <Text style={styles.popupDetail}>
+                🌫️ Dew Point: {celsiusToFahrenheit(selectedStation.properties.dewpoint)}
+              </Text>
+            )}
+            {selectedStation.properties?.windSpeed != null && (
+              <Text style={styles.popupDetail}>
+                💨 Wind Speed: {kmhToMph(selectedStation.properties.windSpeed)}
+              </Text>
+            )}
+            {selectedStation.properties?.timestamp && (
+              <Text style={styles.popupDetail}>
+                🕐 Updated: {new Date(selectedStation.properties.timestamp).toLocaleString()}
+              </Text>
+            )}
           </View>
         )}
 
@@ -583,6 +748,23 @@ const styles = StyleSheet.create({
     color: '#16a34a',
   },
 
+  // Badge (weather stations - blue)
+  badgeWeather: {
+    backgroundColor: '#DBEAFE',
+    borderRadius: 10,
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    marginLeft: 4,
+  },
+  badgeWeatherActive: {
+    backgroundColor: 'rgba(255,255,255,0.25)',
+  },
+  badgeWeatherText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#2563EB',
+  },
+
   // Floating buttons
   fab: {
     position: 'absolute',
@@ -610,7 +792,7 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
 
-  // Fire detail popup
+  // Popup (shared by fire and weather)
   popup: {
     position: 'absolute',
     bottom: 32,

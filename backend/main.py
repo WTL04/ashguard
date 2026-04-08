@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Response
+from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
 from pydantic import BaseModel
@@ -13,6 +13,8 @@ from datetime import date
 import pandas as pd
 from io import StringIO
 import httpx
+import aiohttp
+from incidents import incidents_sync_worker, sync_calfire_incidents
 
 load_dotenv()
 
@@ -20,34 +22,72 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
-CACHE_KEY = "ashguard:latest_fire_data"
-CACHE_TTL = 300  # seconds before cache expires
-POLL_INTERVAL = 300  # how often the background worker refreshes
 
-redis_client: redis_async.Redis = None
+# each dataset has its own poll interval and ttl (dead man's switch)
+CACHE_CONFIGS = {
+    "satellite_hotspots": {
+        "key": "ashguard:satellite_hotspots",
+        "poll": 300,   # 5 mins
+        "ttl": 600,    # 10 mins
+    },
+    "fire_perimeters": {
+        "key": "ashguard:fire_perimeters",
+        "poll": 600,   # 10 mins
+        "ttl": 1200,   # 20 mins
+    },
+    "prescribed_fires": {
+        "key": "ashguard:prescribed_fires",
+        "poll": 3600,  # 60 mins
+        "ttl": 7200,   # 120 mins
+    },
+    "shelters": {
+        "key": "ashguard:shelters",
+        "poll": 600,   # 10 mins
+        "ttl": 1200,   # 20 mins
+    },
+    "weather_stations": {
+        "key": "ashguard:weather_stations",
+        "poll": 300,   # 5 mins
+        "ttl": 600,    # 10 mins
+    },
+    "hospitals": {
+        "key": "ashguard:hospitals",
+        "poll": 600,   # 60 mins 
+        "ttl": 1200,   # 120 mins
+    },
+    "grocery_stores": {
+        "key": "ashguard:grocery_stores",
+        "poll": 600,   # 10 mins
+        "ttl": 1200,   # 20 mins
+    }
+}
+
+redis_client: redis_async.Redis | None = None
 
 """
---- Pydantic Type Checking Models ---
+--- Pydantic Models ---
 """
 
 
-class FireDataResponse(BaseModel):
-    # GeoJSON FeatureCollection
+class GeoDataResponse(BaseModel):
     satellite_hotspots: dict
     fire_perimeters: dict
     prescribed_fires: dict
+    shelters: dict
+    weather_stations: dict
+    hospitals: dict
+    grocery_stores: dict
 
 
 class CacheStatusResponse(BaseModel):
-    cache_exists: bool
-    ttl_seconds_remaining: int
+    datasets: dict
     redis_used_memory: str | None = None
     redis_connected: bool
     error: str | None = None
 
 
 """
---- Helper Functions ---
+--- Helper Constants / Functions ---
 """
 
 EMPTY_FEATURE_COLLECTION = {"type": "FeatureCollection", "features": []}
@@ -79,13 +119,126 @@ def dicts_to_geojson(data_list: list) -> dict:
 
 
 """
---- Asyncronous Background Tasks ---
+--- Weather Data Helpers ---
+"""
+
+CALIFORNIA_STATION_IDS = [
+    "KNGZ", "KAAT", "KAPV", "KACV", "KAUN", "KAVX", "KBFL", "KBAB", "KBUO", "KBYS",
+    "KL35", "KBIH", "KBLH", "KL08", "KO57", "KBAN", "KBUR", "KBNY", "KC83", "KCXL",
+    "KCMA", "KCZZ", "KNFG", "KCRQ", "KO59", "KCIC", "KNID", "KCNO", "KO22", "KCCR",
+    "KAJO", "KSNA", "KCEC", "KDAG", "KDWA", "KEDU", "KDLO", "KEDW", "K9L2", "KNJK",
+    "KEMT", "KBLU", "KEKA", "KL18", "KFOT", "KFCH", "KFAT", "KFUL", "KGOO", "KHAF",
+    "KHJO", "KO18", "KHHR", "KHWD", "KHES", "KHMT", "KCVH", "KHGT", "KNRS", "KIPL",
+    "KIYK", "KJAQ", "KWJF", "KPOC", "KWHP", "KNLC", "KLHM", "KLLR", "KLVK", "KLPC",
+    "KLGB", "KSLI", "KCQT", "KLAX", "KMAE", "KMMH", "KMYV", "KMHR", "KMCC", "KMER",
+    "KMCE", "KNKX", "KMOD", "KNUQ", "KMHV", "KSIY", "KMRY", "KMHS", "KMWS", "KF70",
+    "KAPC", "KEED", "K3A6", "KNZY", "KDVO", "KOAK", "KL52", "KOKB", "KNXF", "KONT",
+    "KOVE", "KOXR", "KGXA", "KPMD", "KPSP", "KPAO", "KPRB", "KO69", "KPVF", "KNTD",
+    "KPTV", "K87Q", "KRNM", "KRBL", "KRDD", "KREI", "KO32", "KO88", "KRAL", "KRIV",
+    "KSAC", "KSMF", "KSNS", "KCPU", "KSBD", "KSQL", "KNUC", "KSDB", "KSDM", "KSAN",
+    "KMYF", "KSEE", "KSFO", "KSJC", "KRHV", "KSBP", "KE16", "KNSI", "KSBA", "KSMX",
+    "KSMO", "KSTS", "KIZA", "KO87", "KTVL", "KSCK", "KSVE", "KTSP", "KTRM", "KTOA",
+    "KTCY", "KSUU", "KO86", "KTRK", "KNXP", "KUKI", "KCCB", "KVCB", "KVBG", "KXVW",
+    "KVNY", "KVCV", "KVIS", "KWVI", "KO54",
+]
+
+NWS_HEADERS = {
+    "User-Agent": "AshGuard/1.0 (ashguard-project@example.com)",
+    "Accept": "application/geo+json",
+}
+
+
+async def fetch_single_station(
+    session: aiohttp.ClientSession,
+    station_id: str,
+    semaphore: asyncio.Semaphore,
+) -> dict | None:
+    """
+    Fetch the most recent valid observation for one NWS station.
+    Returns a GeoJSON Feature, or None if the station has no usable data.
+    """
+    async with semaphore:
+        url = f"https://api.weather.gov/stations/{station_id}/observations"
+        try:
+            await asyncio.sleep(0.2)
+            async with session.get(url, headers=NWS_HEADERS, ssl=False) as response:
+                response.raise_for_status()
+                data = await response.json(content_type=None)
+
+                best_obs = next(
+                    (
+                        obs
+                        for obs in data.get("features", [])
+                        if obs.get("properties", {})
+                        .get("temperature", {})
+                        .get("value") is not None
+                    ),
+                    None,
+                )
+
+                if best_obs is None:
+                    return None
+
+                props = best_obs.get("properties", {})
+                coords = best_obs.get("geometry", {}).get("coordinates", [None, None])
+
+                return {
+                    "type": "Feature",
+                    "geometry": {
+                        "type": "Point",
+                        "coordinates": coords,
+                    },
+                    "properties": {
+                        "stationId": station_id,
+                        "stationName": props.get("stationName", station_id),
+                        "temperature": props.get("temperature", {}).get("value"),
+                        "relativeHumidity": props.get("relativeHumidity", {}).get("value"),
+                        "dewpoint": props.get("dewpoint", {}).get("value"),
+                        "windSpeed": props.get("windSpeed", {}).get("value"),
+                        "timestamp": props.get("timestamp"),
+                    },
+                }
+
+        except aiohttp.ClientResponseError as e:
+            logger.warning(f"HTTP {e.status} for station {station_id}")
+            return None
+        except Exception as e:
+            logger.warning(f"Error fetching station {station_id}: {e}")
+            return None
+
+
+async def fetch_weather_data() -> dict:
+    """
+    Fetch current weather observations for California NWS stations
+    and return a GeoJSON FeatureCollection.
+    """
+    logger.info(
+        f"Fetching weather data for {len(CALIFORNIA_STATION_IDS)} CA stations..."
+    )
+
+    semaphore = asyncio.Semaphore(5)
+
+    async with aiohttp.ClientSession() as session:
+        tasks = [
+            fetch_single_station(session, station_id, semaphore)
+            for station_id in CALIFORNIA_STATION_IDS
+        ]
+        results = await asyncio.gather(*tasks)
+
+    features = [result for result in results if result is not None]
+
+    logger.info(f"Weather fetch complete: {len(features)} stations with valid data.")
+    return {"type": "FeatureCollection", "features": features}
+
+
+"""
+--- Data Fetchers ---
 """
 
 
 async def fetch_satellite_api(state: str | None = None) -> dict:
     """
-    Returns GeoJSON FeatureCollection of satellite detected hotspots from 3 satellite sources.
+    Returns GeoJSON FeatureCollection of satellite-detected hotspots.
     Set state="CA" for California only, otherwise returns global data.
     """
     map_key = os.getenv("NASA_FIRMS_API_KEY")
@@ -96,10 +249,11 @@ async def fetch_satellite_api(state: str | None = None) -> dict:
     world_bbox = "-180,-90,180,90"
     bbox = cali_bbox if state and state.upper() == "CA" else world_bbox
 
-    if state and state.upper() == "CA":
-        logger.info("Fetching California satellite fire data")
-    else:
-        logger.info("Fetching global satellite fire data")
+    logger.info(
+        "Fetching California satellite fire data"
+        if state and state.upper() == "CA"
+        else "Fetching global satellite fire data"
+    )
 
     day_range = 1
     today = str(date.today())
@@ -118,7 +272,10 @@ async def fetch_satellite_api(state: str | None = None) -> dict:
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         for satellite in satellites:
-            url = f"https://firms.modaps.eosdis.nasa.gov/api/area/csv/{map_key}/{satellite}/{bbox}/{day_range}/{today}"
+            url = (
+                f"https://firms.modaps.eosdis.nasa.gov/api/area/csv/"
+                f"{map_key}/{satellite}/{bbox}/{day_range}/{today}"
+            )
             r = await client.get(url)
 
             if r.status_code == 200:
@@ -128,11 +285,8 @@ async def fetch_satellite_api(state: str | None = None) -> dict:
                 df_list.append(satellite_df[essential_cols])
                 logger.info(f"Successfully fetched data from {satellite}")
             else:
-                logger.warning(
-                    f"Failed to fetch from {satellite}: status {r.status_code}"
-                )
+                logger.warning(f"Failed to fetch from {satellite}: status {r.status_code}")
 
-    # FIX: always return a valid FeatureCollection, never an empty list
     if not df_list:
         return EMPTY_FEATURE_COLLECTION
 
@@ -144,7 +298,7 @@ async def fetch_satellite_api(state: str | None = None) -> dict:
 async def fetch_fire_perimeters(state: str | None = None) -> dict:
     """
     Returns GeoJSON of fire perimeter data from NIFC.
-    Set state="CA" for California only, otherwise returns global data.
+    Set state="CA" for California only, otherwise returns USA data.
     """
     params = {
         "where": "1=1",
@@ -156,10 +310,16 @@ async def fetch_fire_perimeters(state: str | None = None) -> dict:
     }
 
     if state and state.upper() == "CA":
-        url = "https://services1.arcgis.com/jUJYIo9tSA7EHvfZ/arcgis/rest/services/CA_Perimeters_NIFC_FIRIS_public_view/FeatureServer/0/query"
+        url = (
+            "https://services1.arcgis.com/jUJYIo9tSA7EHvfZ/arcgis/rest/services/"
+            "CA_Perimeters_NIFC_FIRIS_public_view/FeatureServer/0/query"
+        )
         logger.info("Fetching California fire perimeters")
     else:
-        url = "https://services3.arcgis.com/T4QMspbfLg3qTGWY/arcgis/rest/services/WFIGS_Interagency_Perimeters_Current/FeatureServer/0/query"
+        url = (
+            "https://services3.arcgis.com/T4QMspbfLg3qTGWY/arcgis/rest/services/"
+            "WFIGS_Interagency_Perimeters_Current/FeatureServer/0/query"
+        )
         logger.info("Fetching USA fire perimeters")
 
     async with httpx.AsyncClient(timeout=30.0) as client:
@@ -171,7 +331,7 @@ async def fetch_fire_perimeters(state: str | None = None) -> dict:
 async def fetch_prescribed_fires(state: str | None = None) -> dict:
     """
     Returns GeoJSON of prescribed fires from Watch Duty.
-    Set state="CA" for California only, otherwise returns global data.
+    Set state="CA" for California only.
     """
     params = {
         "where": "1=1",
@@ -189,16 +349,18 @@ async def fetch_prescribed_fires(state: str | None = None) -> dict:
         logger.info("Fetching California prescribed fires")
 
     async with httpx.AsyncClient(timeout=30.0) as client:
-        url = "https://services5.arcgis.com/VNhSlpl1umSknM3q/arcgis/rest/services/Watch_Duty_Prescribed_Fires/FeatureServer/0/query"
+        url = (
+            "https://services5.arcgis.com/VNhSlpl1umSknM3q/arcgis/rest/services/"
+            "Watch_Duty_Prescribed_Fires/FeatureServer/0/query"
+        )
         r = await client.get(url, params=params)
         r.raise_for_status()
         return r.json()
 
 
-# TEST: Testing fire perimeters with 2025 california wildfire perimeters
-async def fetch_2026_Year_to_Date_fire_perimeters() -> dict:
+async def fetch_2026_year_to_date_fire_perimeters() -> dict:
     """
-    Returns GeoJSON of 2026 Year to Date fire perimeter data from NIFC.
+    Returns GeoJSON of 2026 year-to-date fire perimeter data from NIFC.
     """
     params = {
         "where": "1=1",
@@ -209,8 +371,94 @@ async def fetch_2026_Year_to_Date_fire_perimeters() -> dict:
         "resultRecordCount": 2000,
     }
 
-    url = "https://services3.arcgis.com/T4QMspbfLg3qTGWY/arcgis/rest/services/WFIGS_Interagency_Perimeters_YearToDate/FeatureServer/0/query"
-    logger.info("Fetching 2026 year to date fire perimeters")
+    url = (
+        "https://services3.arcgis.com/T4QMspbfLg3qTGWY/arcgis/rest/services/"
+        "WFIGS_Interagency_Perimeters_YearToDate/FeatureServer/0/query"
+    )
+    logger.info("Fetching 2026 year-to-date fire perimeters")
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        r = await client.get(url, params=params)
+        r.raise_for_status()
+        return r.json()
+
+
+async def fetch_shelters() -> dict:
+    """
+    Returns GeoJSON of currently available Red Cross shelters.
+    """
+    params = {
+        "where": "1=1",
+        "outFields": "*",
+        "returnGeometry": "true",
+        "f": "geojson",
+        "outSR": 4326,
+        "resultRecordCount": 2000,
+    }
+
+    url = (
+        "https://services.arcgis.com/pGfbNJoYypmNq86F/arcgis/rest/services/"
+        "Open_Shelters/FeatureServer/0/query"
+    )
+    logger.info("Fetching currently available Red Cross shelters")
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        r = await client.get(url, params=params)
+        r.raise_for_status()
+        return r.json()
+
+
+async def fetch_hospitals(state: str | None = None) -> dict:
+    """
+    Returns GeoJSON of hospitals.
+    Set state="CA" for California only, otherwise returns all hospitals.
+    """
+    if state and state.upper() == "CA":
+        where_clause = "STATE = 'CA'"
+        logger.info("Fetching California hospitals")
+    else:
+        where_clause = "1=1"
+        logger.info("Fetching all hospitals")
+
+    params = {
+        "where": where_clause,
+        "outFields": "*",
+        "returnGeometry": "true",
+        "f": "geojson",
+        "outSR": 4326,
+        "resultRecordCount": 2000,
+    }
+
+    url = "https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/Structures_Medical_Emergency_Response_v1/FeatureServer/0/query"
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        r = await client.get(url, params=params)
+        r.raise_for_status()
+        return r.json()
+
+
+async def fetch_grocery_stores(state: str | None = None) -> dict:
+    """
+    Returns GeoJSON of grocery stores.
+    Set state="CA" for California only, otherwise returns all grocery stores.
+    """
+    if state and state.upper() == "CA":
+        where_clause = "STATE = 'CA'"
+        logger.info("Fetching California grocery stores")
+    else:
+        where_clause = "1=1"
+        logger.info("Fetching all grocery stores")
+
+    params = {
+        "where": where_clause,
+        "outFields": "*",
+        "returnGeometry": "true",
+        "f": "geojson",
+        "outSR": 4326,
+        "resultRecordCount": 2000,
+    }
+
+    url = "https://services2.arcgis.com/HsXtOCMp1Nis1Ogr/arcgis/rest/services/GroceryStores_FullLine/FeatureServer/0/query"
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         r = await client.get(url, params=params)
@@ -219,43 +467,44 @@ async def fetch_2026_Year_to_Date_fire_perimeters() -> dict:
 
 
 """
---- Background Worker ---
+--- Background Workers ---
 """
 
+FETCH_FUNCTIONS = {
+    "satellite_hotspots": lambda: fetch_satellite_api(state="CA"),
+    "fire_perimeters": lambda: fetch_fire_perimeters(state="CA"),
+    "prescribed_fires": lambda: fetch_prescribed_fires(state="CA"),
+    "shelters": fetch_shelters,
+    "weather_stations": fetch_weather_data,
+    "hospitals": lambda: fetch_hospitals(state="CA"),
+    "grocery_stores": lambda: fetch_grocery_stores(state="CA")
+}
 
-async def data_ingestion_worker():
+
+async def dataset_worker(name: str):
+    """
+    Independent refresh loop for a single dataset.
+    TTL acts as a dead man's switch: if this worker dies, Redis
+    evicts the key after ttl seconds rather than serving stale data forever.
+    """
+    config = CACHE_CONFIGS[name]
+    key = config["key"]
+    poll = config["poll"]
+    ttl = config["ttl"]
+    fetch_fn = FETCH_FUNCTIONS[name]
+
     while True:
         try:
-            (
-                satellite_hotspots,
-                fire_perimeters,
-                prescribed_fires,
-            ) = await asyncio.gather(
-                fetch_satellite_api(state="CA"),
-                fetch_2026_Year_to_Date_fire_perimeters(),
-                fetch_prescribed_fires(state="CA"),
-            )
-
-            # FIX: store as a named dict so FireDataResponse keys match
-            payload = json.dumps(
-                {
-                    "satellite_hotspots": satellite_hotspots,
-                    "fire_perimeters": fire_perimeters,
-                    "prescribed_fires": prescribed_fires,
-                }
-            )
-            await redis_client.setex(CACHE_KEY, CACHE_TTL, payload)
-            logger.info("Cache updated with real API data.")
-
-            await asyncio.sleep(POLL_INTERVAL)
-
+            data = await fetch_fn()
+            await redis_client.setex(key, ttl, json.dumps(data))
+            logger.info(f"[{name}] Cache updated.")
         except asyncio.CancelledError:
-            logger.info("Worker shutting down.")
+            logger.info(f"[{name}] Worker shutting down.")
             break
+        except Exception as e:
+            logger.error(f"[{name}] Fetch failed: {e}")
 
-        except Exception as err:
-            logger.error(f"Worker error: {err}")
-            await asyncio.sleep(10)
+        await asyncio.sleep(poll)
 
 
 """
@@ -265,7 +514,6 @@ async def data_ingestion_worker():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # FIX: validate NASA key at startup so we fail fast, not mid-request
     if not os.getenv("NASA_FIRMS_API_KEY"):
         raise RuntimeError("NASA_FIRMS_API_KEY environment variable is not set")
 
@@ -276,17 +524,23 @@ async def lifespan(app: FastAPI):
 
     try:
         await redis_client.ping()
-        logger.info("Redis connected successfully.")
+        logger.info(f"Redis connected successfully at: {REDIS_URL}.")
     except Exception as e:
         logger.error(f"Redis connection failed: {e}")
 
-    task = asyncio.create_task(data_ingestion_worker())
+    dataset_tasks = [
+        asyncio.create_task(dataset_worker(name))
+        for name in CACHE_CONFIGS
+    ]
+    incidents_task = asyncio.create_task(incidents_sync_worker())
+
     yield
-    task.cancel()
-    try:
-        await task
-    except asyncio.CancelledError:
-        pass
+
+    for task in dataset_tasks:
+        task.cancel()
+    incidents_task.cancel()
+
+    await asyncio.gather(*dataset_tasks, incidents_task, return_exceptions=True)
     await redis_client.aclose()
 
 
@@ -303,46 +557,82 @@ def read_root():
     return {"status": "ok", "message": "AshGuard API is running"}
 
 
-# FIX: response_model wired up so Pydantic validates and docs are accurate
-@app.get("/api/v1/fires", response_model=FireDataResponse)
-async def get_cached_fires():
-    """Returns fire data from Redis cache."""
-    raw = await redis_client.get(CACHE_KEY)
-    if raw:
-        return json.loads(raw)
-    # FIX: content must be bytes, and use JSONResponse for consistency
-    return JSONResponse(
-        status_code=503,
-        content={"detail": "Data not yet available, retry shortly"},
-    )
+@app.get("/api/v1/geoData", response_model=GeoDataResponse)
+async def get_cached_data():
+    """
+    Returns all geo data from Redis cache.
+    Missing datasets fall back to empty FeatureCollections.
+    """
+    response_data = {}
+    missing = []
+
+    for name, config in CACHE_CONFIGS.items():
+        raw = await redis_client.get(config["key"])
+        if raw:
+            response_data[name] = json.loads(raw)
+        else:
+            response_data[name] = EMPTY_FEATURE_COLLECTION
+            missing.append(name)
+
+    if missing:
+        logger.warning(f"Serving empty collections for: {missing}")
+
+    return response_data
 
 
-# FIX: response_model wired up
 @app.get("/api/v1/cache/status", response_model=CacheStatusResponse)
 async def cache_status():
-    """Shows Redis cache health and TTL remaining."""
+    """
+    Shows per-dataset Redis cache health and TTL remaining.
+    """
     try:
-        ttl = await redis_client.ttl(CACHE_KEY)
-        exists = await redis_client.exists(CACHE_KEY)
         memory = await redis_client.info("memory")
+        datasets = {}
+
+        for name, config in CACHE_CONFIGS.items():
+            key = config["key"]
+            ttl = await redis_client.ttl(key)
+            exists = await redis_client.exists(key)
+            datasets[name] = {
+                "cache_exists": bool(exists),
+                "ttl_seconds_remaining": ttl,
+            }
+
         return CacheStatusResponse(
-            cache_exists=bool(exists),
-            ttl_seconds_remaining=ttl,
+            datasets=datasets,
             redis_used_memory=memory.get("used_memory_human"),
             redis_connected=True,
         )
     except Exception as e:
         return CacheStatusResponse(
-            cache_exists=False,
-            ttl_seconds_remaining=-1,
+            datasets={},
             redis_connected=False,
             error=str(e),
         )
 
 
-# FIX: changed from GET to DELETE — mutating state shouldn't be a GET
 @app.delete("/api/v1/cache/flush")
 async def flush_cache():
-    """Clears the cache — useful for testing."""
-    await redis_client.delete(CACHE_KEY)
-    return {"message": "Cache cleared"}
+    """
+    Clears all dataset caches.
+    """
+    keys = [config["key"] for config in CACHE_CONFIGS.values()]
+    await redis_client.delete(*keys)
+    return {"message": "All caches cleared", "keys_flushed": keys}
+
+
+@app.post("/api/v1/incidents/sync")
+async def manual_sync_incidents():
+    """
+    Manually triggers a CalFire RSS sync into Firestore.
+    Useful for testing or forcing an immediate update.
+    """
+    try:
+        count = await sync_calfire_incidents()
+        return {"message": "Sync complete", "incidents_processed": count}
+    except Exception as e:
+        logger.error(f"Manual sync failed: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"Sync failed: {str(e)}"},
+        )
