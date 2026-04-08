@@ -40,7 +40,14 @@
         {
           "locationWhenInUsePermission": "AshGuard uses your location to show nearby fire activity."
         }
-      ]
+      ],
+      [
+        "expo-contacts",
+        {
+          "contactPermissions": "AshGuard uses your contacts so you can add emergency group members"
+        }
+      ],
+      "@maplibre/maplibre-react-native"
     ]
   }
 }
