@@ -8,6 +8,7 @@ import {
   KeyboardAvoidingView,
   Platform,
   ScrollView,
+  Image,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Link, useRouter } from 'expo-router';
@@ -32,7 +33,7 @@ export default function LoginScreen() {
     setError('');
     try {
       await signIn(email.trim(), password);
-      router.replace('/(tabs)/map');
+      router.replace('/(tabs)/map/maplibre');
     } catch (e: any) {
       setError(friendlyError(e.code));
     }
@@ -58,12 +59,11 @@ export default function LoginScreen() {
             <View style={styles.card}>
 
               <View style={styles.logoWrapper}>
-                <View style={styles.logoCircle}>
-                  <Ionicons name="shield" size={52} color={Colors.primary} />
-                  <View style={styles.flameOverlay}>
-                    <Ionicons name="flame" size={22} color="#FFFFFF" />
-                  </View>
-                </View>
+                <Image
+                  source={require('@/assets/logo.png')}
+                  style={styles.logo}
+                  resizeMode="contain"
+                />
               </View>
 
               <Text style={styles.title}>Login</Text>
@@ -123,7 +123,6 @@ export default function LoginScreen() {
                 </Link>
               </View>
 
-              {/* Error message */}
               {error ? (
                 <Text style={styles.errorText}>{error}</Text>
               ) : null}
@@ -175,17 +174,9 @@ const styles = StyleSheet.create({
     elevation: 8,
   },
   logoWrapper: { alignItems: 'center', marginBottom: 20 },
-  logoCircle: {
+  logo: {
     width: 80,
     height: 80,
-    alignItems: 'center',
-    justifyContent: 'center',
-    position: 'relative',
-  },
-  flameOverlay: {
-    position: 'absolute',
-    bottom: 8,
-    alignItems: 'center',
   },
   title: {
     fontSize: 26,
