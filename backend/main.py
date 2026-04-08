@@ -52,8 +52,8 @@ CACHE_CONFIGS = {
     },
     "hospitals": {
         "key": "ashguard:hospitals",
-        "poll": 600,   # 60 mins 
-        "ttl": 1200,   # 120 mins
+        "poll": 86400,   # 1 day 
+        "ttl": 172800,   # 2 days
     },
     "grocery_stores": {
         "key": "ashguard:grocery_stores",
@@ -353,31 +353,6 @@ async def fetch_prescribed_fires(state: str | None = None) -> dict:
             "https://services5.arcgis.com/VNhSlpl1umSknM3q/arcgis/rest/services/"
             "Watch_Duty_Prescribed_Fires/FeatureServer/0/query"
         )
-        r = await client.get(url, params=params)
-        r.raise_for_status()
-        return r.json()
-
-
-async def fetch_2026_year_to_date_fire_perimeters() -> dict:
-    """
-    Returns GeoJSON of 2026 year-to-date fire perimeter data from NIFC.
-    """
-    params = {
-        "where": "1=1",
-        "outFields": "*",
-        "returnGeometry": "true",
-        "f": "geojson",
-        "outSR": 4326,
-        "resultRecordCount": 2000,
-    }
-
-    url = (
-        "https://services3.arcgis.com/T4QMspbfLg3qTGWY/arcgis/rest/services/"
-        "WFIGS_Interagency_Perimeters_YearToDate/FeatureServer/0/query"
-    )
-    logger.info("Fetching 2026 year-to-date fire perimeters")
-
-    async with httpx.AsyncClient(timeout=30.0) as client:
         r = await client.get(url, params=params)
         r.raise_for_status()
         return r.json()
