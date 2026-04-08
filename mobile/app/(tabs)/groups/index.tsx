@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   View,
   Text,
@@ -6,83 +6,175 @@ import {
   TextInput,
   TouchableOpacity,
   FlatList,
-  Image,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
+import { collection, query, where, onSnapshot, orderBy } from 'firebase/firestore';
+import { onAuthStateChanged } from 'firebase/auth';
+import { db, auth } from '@/lib/firebaseConfig';
 
-interface Message {
-  id: string;
-  name: string;
-  message: string;
-  time: string;
-  unread: boolean;
-  avatar: string;
+function formatMessageTime(timestamp: any) {
+  if (!timestamp?.toDate) return '';
+
+  const date = timestamp.toDate();
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+
+  const minutes = Math.floor(diffMs / (1000 * 60));
+  const hours = Math.floor(diffMs / (1000 * 60 * 60));
+  const days = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+
+  if (minutes < 1) return 'Now';
+  if (minutes < 60) return `${minutes} min ago`;
+  if (hours < 24) return `${hours} hour${hours === 1 ? '' : 's'} ago`;
+  return `${days} day${days === 1 ? '' : 's'} ago`;
 }
-
-const messages: Message[] = [
-  {
-    id: '1',
-    name: 'First Name Last Name',
-    message: 'Supporting line text lorem ipsum',
-    time: 'Now',
-    unread: true,
-    avatar: 'https://via.placeholder.com/56',
-  },
-  {
-    id: '2',
-    name: 'First Name Last Name',
-    message: 'Supporting line text lorem ipsum',
-    time: '26 min ago',
-    unread: false,
-    avatar: 'https://via.placeholder.com/56',
-  },
-  {
-    id: '3',
-    name: 'First Name Last Name',
-    message: 'Supporting line text lorem ipsum',
-    time: '1 hour ago',
-    unread: false,
-    avatar: 'https://via.placeholder.com/56',
-  },
-  {
-    id: '4',
-    name: 'First Name Last Name',
-    message: 'Supporting line text lorem ipsum',
-    time: '4 hours ago',
-    unread: false,
-    avatar: 'https://via.placeholder.com/56',
-  },
-  {
-    id: '5',
-    name: 'First Name Last Name',
-    message: 'Supporting line text lorem ipsum',
-    time: '2 days ago',
-    unread: false,
-    avatar: 'https://via.placeholder.com/56',
-  },
-];
 
 export default function GroupsScreen() {
   const insets = useSafeAreaInsets();
+  const [chats, setChats] = useState<any[]>([]);
+  const [authReady, setAuthReady] = useState(false);
 
-  const renderMessage = ({ item }: { item: Message }) => (
-    <TouchableOpacity style={styles.messageRow}>
-      <View style={styles.avatarWrap}>
-        <Image source={{ uri: item.avatar }} style={styles.avatar} />
-        {item.unread && <View style={styles.unreadDot} />}
+  useEffect(() => {
+    let unsubscribeChats: (() => void) | undefined;
+
+    const unsubscribeAuth = onAuthStateChanged(auth, (user) => {
+      if (unsubscribeChats) {
+        unsubscribeChats();
+        unsubscribeChats = undefined;
+      }
+
+      if (!user) {
+        setChats([]);
+        setAuthReady(true);
+        return;
+      }
+
+      const q = query(
+        collection(db, 'chats'),
+        where('participants', 'array-contains', user.uid),
+        orderBy('lastMessageAt', 'desc')
+      );
+
+      unsubscribeChats = onSnapshot(
+        q,
+        (snapshot) => {
+          const chatList = snapshot.docs.map((doc) => ({
+            id: doc.id,
+            ...doc.data(),
+          }));
+
+          setChats(chatList);
+          setAuthReady(true);
+        },
+        (error) => {
+          console.log('Error loading chats:', error);
+          setAuthReady(true);
+        }
+      );
+    });
+
+    return () => {
+      unsubscribeAuth();
+      if (unsubscribeChats) unsubscribeChats();
+    };
+  }, []);
+
+  const currentUid = auth.currentUser?.uid;
+
+  const totalUnreadCount = chats.reduce((sum, chat) => {
+    const count = chat?.unreadCounts?.[currentUid || ''] || 0;
+    return sum + count;
+  }, 0);
+
+  const renderMessage = ({ item }: any) => {
+    const participantDetails = item.participantDetails || {};
+    const entries = Object.entries(participantDetails) as [string, any][];
+
+    let displayUser: any = null;
+
+    const otherUserEntry = entries.find(([uid]) => uid !== currentUid);
+
+    if (otherUserEntry) {
+      displayUser = otherUserEntry[1];
+    } else {
+      displayUser = participantDetails[currentUid || ''];
+    }
+
+    const displayName = displayUser
+      ? `${displayUser.firstName || ''} ${displayUser.lastName || ''}`.trim()
+      : 'Unknown User';
+
+    const previewText = item.lastMessage?.trim()
+      ? item.lastMessage
+      : 'Start a conversation';
+
+    const timeText = formatMessageTime(item.lastMessageAt);
+    const unreadCount = item?.unreadCounts?.[currentUid || ''] || 0;
+    const hasUnread = unreadCount > 0;
+
+    return (
+      <TouchableOpacity
+        style={styles.messageRow}
+        onPress={() =>
+          router.push({
+            pathname: '/(tabs)/groups/chat',
+            params: {
+              chatId: item.id,
+              name: displayName,
+            },
+          })
+        }
+      >
+        <View style={styles.avatarWrap}>
+          <View style={styles.avatar} />
+          {hasUnread ? <View style={styles.unreadDot} /> : null}
+        </View>
+
+        <View style={styles.messageContent}>
+          <Text style={styles.messageName} numberOfLines={1}>
+            {displayName}
+          </Text>
+
+          <Text
+            style={[
+              styles.messagePreview,
+              hasUnread && styles.messagePreviewUnread,
+            ]}
+            numberOfLines={1}
+          >
+            {previewText}
+          </Text>
+        </View>
+
+        <View style={styles.rightSide}>
+          <Text style={styles.messageTime}>{timeText}</Text>
+
+          {hasUnread ? (
+            <View style={styles.unreadBadge}>
+              <Text style={styles.unreadBadgeText}>
+                {unreadCount > 99 ? '99+' : unreadCount}
+              </Text>
+            </View>
+          ) : null}
+        </View>
+      </TouchableOpacity>
+    );
+  };
+
+  const renderEmptyState = () => {
+    if (!authReady) return null;
+
+    return (
+      <View style={styles.emptyState}>
+        <Ionicons name="chatbubbles-outline" size={54} color="#C9C9C9" />
+        <Text style={styles.emptyTitle}>No messages yet</Text>
+        <Text style={styles.emptySubtitle}>Start a conversation</Text>
       </View>
-
-      <View style={styles.messageContent}>
-        <Text style={styles.messageName}>{item.name}</Text>
-        <Text style={styles.messagePreview}>{item.message}</Text>
-      </View>
-
-      <Text style={styles.messageTime}>{item.time}</Text>
-    </TouchableOpacity>
-  );
+    );
+  };
 
   return (
     <>
@@ -90,13 +182,16 @@ export default function GroupsScreen() {
 
       <SafeAreaView style={styles.container} edges={['bottom']}>
         <FlatList
-          data={messages}
+          data={chats}
           keyExtractor={(item) => item.id}
           renderItem={renderMessage}
           showsVerticalScrollIndicator={false}
+          contentContainerStyle={[
+            styles.listContent,
+            chats.length === 0 && styles.listContentEmpty,
+          ]}
           ListHeaderComponent={
             <>
-              {/* ORANGE HEADER */}
               <View style={[styles.header, { paddingTop: insets.top + 10 }]}>
                 <View style={styles.searchRow}>
                   <View style={styles.searchBar}>
@@ -108,19 +203,26 @@ export default function GroupsScreen() {
                     />
                   </View>
 
-                  <TouchableOpacity style={styles.composeButton}>
+                  <TouchableOpacity
+                    style={styles.composeButton}
+                    onPress={() => router.push('/(tabs)/groups/newmessage')}
+                  >
                     <Ionicons name="create-outline" size={22} color="#fff" />
                   </TouchableOpacity>
                 </View>
               </View>
 
-              {/* TITLE SECTION */}
               <View style={styles.titleSection}>
                 <Text style={styles.title}>Messages</Text>
-                <Text style={styles.subtitle}>You have 1 unread message</Text>
+                <Text style={styles.subtitle}>
+                  {chats.length > 0
+                    ? `You have ${totalUnreadCount} unread message${totalUnreadCount === 1 ? '' : 's'}`
+                    : authReady
+                    ? 'No conversations yet'
+                    : 'Loading conversations...'}
+                </Text>
               </View>
 
-              {/* EMERGENCY GROUP CARD */}
               <TouchableOpacity
                 style={styles.groupCard}
                 onPress={() => router.push('/(tabs)/groups/emergency')}
@@ -135,21 +237,6 @@ export default function GroupsScreen() {
                     style={{ marginRight: 10 }}
                   />
 
-                  <View style={styles.avatarStack}>
-                    <Image
-                      source={{ uri: 'https://via.placeholder.com/40/8ec5ff' }}
-                      style={[styles.stackAvatar, { top: 0, left: 10 }]}
-                    />
-                    <Image
-                      source={{ uri: 'https://via.placeholder.com/40/ffd36e' }}
-                      style={[styles.stackAvatar, { top: 12, left: 16 }]}
-                    />
-                    <Image
-                      source={{ uri: 'https://via.placeholder.com/40/ff9f7a' }}
-                      style={[styles.stackAvatar, { top: 24, left: 4 }]}
-                    />
-                  </View>
-
                   <Text style={styles.groupText}>View Emergency Group</Text>
 
                   <Ionicons name="chevron-forward" size={22} color="#111" />
@@ -157,6 +244,7 @@ export default function GroupsScreen() {
               </TouchableOpacity>
             </>
           }
+          ListEmptyComponent={renderEmptyState}
         />
       </SafeAreaView>
     </>
@@ -166,7 +254,15 @@ export default function GroupsScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#F7F7F7',
+    backgroundColor: '#F3F3F3',
+  },
+
+  listContent: {
+    paddingBottom: 24,
+  },
+
+  listContentEmpty: {
+    flexGrow: 1,
   },
 
   header: {
@@ -208,9 +304,10 @@ const styles = StyleSheet.create({
   },
 
   titleSection: {
-    backgroundColor: '#fff',
+    backgroundColor: '#F3F3F3',
     paddingHorizontal: 16,
-    paddingVertical: 16,
+    paddingTop: 18,
+    paddingBottom: 14,
   },
 
   title: {
@@ -243,22 +340,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
   },
 
-  avatarStack: {
-    width: 40,
-    height: 56,
-    marginRight: 12,
-    position: 'relative',
-  },
-
-  stackAvatar: {
-    position: 'absolute',
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    borderWidth: 2,
-    borderColor: '#F5DFC2',
-  },
-
   groupText: {
     flex: 1,
     fontSize: 17,
@@ -269,8 +350,8 @@ const styles = StyleSheet.create({
   messageRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#fff',
-    paddingHorizontal: 16,
+    backgroundColor: '#F3F3F3',
+    paddingHorizontal: 14,
     paddingVertical: 14,
   },
 
@@ -283,7 +364,7 @@ const styles = StyleSheet.create({
     width: 56,
     height: 56,
     borderRadius: 28,
-    backgroundColor: '#DDD',
+    backgroundColor: '#D8D8D8',
   },
 
   unreadDot: {
@@ -293,19 +374,22 @@ const styles = StyleSheet.create({
     width: 12,
     height: 12,
     borderRadius: 6,
-    backgroundColor: '#32CD32',
+    backgroundColor: '#F58500',
     borderWidth: 2,
-    borderColor: '#fff',
+    borderColor: '#F3F3F3',
   },
 
   messageContent: {
     flex: 1,
+    justifyContent: 'center',
+    marginRight: 10,
   },
 
   messageName: {
     fontSize: 16,
     fontWeight: '700',
-    marginBottom: 3,
+    color: '#111',
+    marginBottom: 4,
   },
 
   messagePreview: {
@@ -313,8 +397,58 @@ const styles = StyleSheet.create({
     color: '#666',
   },
 
+  messagePreviewUnread: {
+    color: '#111',
+    fontWeight: '600',
+  },
+
+  rightSide: {
+    alignItems: 'flex-end',
+    justifyContent: 'flex-start',
+    minWidth: 70,
+  },
+
   messageTime: {
     fontSize: 13,
     color: '#666',
+    marginTop: 4,
+  },
+
+  unreadBadge: {
+    minWidth: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: '#F58500',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 6,
+    marginTop: 8,
+  },
+
+  unreadBadgeText: {
+    color: '#fff',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+
+  emptyState: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingBottom: 80,
+  },
+
+  emptyTitle: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: '#111',
+    marginTop: 14,
+  },
+
+  emptySubtitle: {
+    fontSize: 14,
+    color: '#8A8A8A',
+    marginTop: 6,
+    textAlign: 'center',
   },
 });
