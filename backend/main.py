@@ -19,7 +19,7 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379") or "redis://127.0.0.1:6379"
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 
 # each dataset has its own poll interval and ttl (dead man's switch)
 CACHE_CONFIGS = {
@@ -72,6 +72,7 @@ class CacheStatusResponse(BaseModel):
 """
 
 EMPTY_FEATURE_COLLECTION = {"type": "FeatureCollection", "features": []}
+EMPTY_FEATURE_COLLECTION_JSON = json.dumps(EMPTY_FEATURE_COLLECTION)
 
 
 def dicts_to_geojson(data_list: list) -> dict:
@@ -215,6 +216,7 @@ async def fetch_prescribed_fires(state: str | None = None) -> dict:
         return r.json()
 
 
+# TEST: Keep this for testing purposes, default to fetch_fire_perimeters()
 async def fetch_2026_Year_to_Date_fire_perimeters() -> dict:
     """
     Returns GeoJSON of 2026 Year to Date fire perimeter data from NIFC.
@@ -263,7 +265,7 @@ async def fetch_shelters() -> dict:
 # Maps each dataset name to its fetch function
 FETCH_FUNCTIONS = {
     "satellite_hotspots": lambda: fetch_satellite_api(state="CA"),
-    "fire_perimeters": fetch_2026_Year_to_Date_fire_perimeters,
+    "fire_perimeters": lambda: fetch_fire_perimeters(state="CA"),
     "prescribed_fires": lambda: fetch_prescribed_fires(state="CA"),
     "shelters": fetch_shelters,
 }
@@ -346,24 +348,27 @@ def read_root():
     return {"status": "ok", "message": "AshGuard API is running"}
 
 
-@app.get("/api/v1/geoData", response_model=GeoDataResponse)
-async def get_cached_fires():
+@app.get("/api/v1/geoData")
+async def get_cached_data():
     """Returns all geo data from Redis cache. Missing datasets fall back to empty FeatureCollections."""
-    results = {}
+    parts = []
     missing = []
 
     for name, config in CACHE_CONFIGS.items():
         raw = await redis_client.get(config["key"])
         if raw:
-            results[name] = json.loads(raw)
+            parts.append(f'"{name}":{raw}')
         else:
-            results[name] = EMPTY_FEATURE_COLLECTION
+            parts.append(f'"{name}":{EMPTY_FEATURE_COLLECTION_JSON}')
             missing.append(name)
 
     if missing:
         logger.warning(f"Serving empty collections for: {missing}")
 
-    return results
+    return Response(
+        content="{" + ",".join(parts) + "}",
+        media_type="application/json",
+    )
 
 
 @app.get("/api/v1/cache/status", response_model=CacheStatusResponse)
