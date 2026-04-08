@@ -12,6 +12,7 @@ import { StatusBar } from 'expo-status-bar';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import { collection, query, where, onSnapshot, orderBy } from 'firebase/firestore';
+import { onAuthStateChanged } from 'firebase/auth';
 import { db, auth } from '@/lib/firebaseConfig';
 
 function formatMessageTime(timestamp: any) {
@@ -34,31 +35,61 @@ function formatMessageTime(timestamp: any) {
 export default function GroupsScreen() {
   const insets = useSafeAreaInsets();
   const [chats, setChats] = useState<any[]>([]);
+  const [authReady, setAuthReady] = useState(false);
 
   useEffect(() => {
-    const currentUid = auth.currentUser?.uid;
-    if (!currentUid) return;
+    let unsubscribeChats: (() => void) | undefined;
 
-    const q = query(
-      collection(db, 'chats'),
-      where('participants', 'array-contains', currentUid),
-      orderBy('lastMessageAt', 'desc')
-    );
+    const unsubscribeAuth = onAuthStateChanged(auth, (user) => {
+      if (unsubscribeChats) {
+        unsubscribeChats();
+        unsubscribeChats = undefined;
+      }
 
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const chatList = snapshot.docs.map((doc) => ({
-        id: doc.id,
-        ...doc.data(),
-      }));
+      if (!user) {
+        setChats([]);
+        setAuthReady(true);
+        return;
+      }
 
-      setChats(chatList);
+      const q = query(
+        collection(db, 'chats'),
+        where('participants', 'array-contains', user.uid),
+        orderBy('lastMessageAt', 'desc')
+      );
+
+      unsubscribeChats = onSnapshot(
+        q,
+        (snapshot) => {
+          const chatList = snapshot.docs.map((doc) => ({
+            id: doc.id,
+            ...doc.data(),
+          }));
+
+          setChats(chatList);
+          setAuthReady(true);
+        },
+        (error) => {
+          console.log('Error loading chats:', error);
+          setAuthReady(true);
+        }
+      );
     });
 
-    return unsubscribe;
+    return () => {
+      unsubscribeAuth();
+      if (unsubscribeChats) unsubscribeChats();
+    };
   }, []);
 
+  const currentUid = auth.currentUser?.uid;
+
+  const totalUnreadCount = chats.reduce((sum, chat) => {
+    const count = chat?.unreadCounts?.[currentUid || ''] || 0;
+    return sum + count;
+  }, 0);
+
   const renderMessage = ({ item }: any) => {
-    const currentUid = auth.currentUser?.uid;
     const participantDetails = item.participantDetails || {};
     const entries = Object.entries(participantDetails) as [string, any][];
 
@@ -81,6 +112,8 @@ export default function GroupsScreen() {
       : 'Start a conversation';
 
     const timeText = formatMessageTime(item.lastMessageAt);
+    const unreadCount = item?.unreadCounts?.[currentUid || ''] || 0;
+    const hasUnread = unreadCount > 0;
 
     return (
       <TouchableOpacity
@@ -97,6 +130,7 @@ export default function GroupsScreen() {
       >
         <View style={styles.avatarWrap}>
           <View style={styles.avatar} />
+          {hasUnread ? <View style={styles.unreadDot} /> : null}
         </View>
 
         <View style={styles.messageContent}>
@@ -104,25 +138,43 @@ export default function GroupsScreen() {
             {displayName}
           </Text>
 
-          <Text style={styles.messagePreview} numberOfLines={1}>
+          <Text
+            style={[
+              styles.messagePreview,
+              hasUnread && styles.messagePreviewUnread,
+            ]}
+            numberOfLines={1}
+          >
             {previewText}
           </Text>
         </View>
 
-        <Text style={styles.messageTime}>
-          {timeText}
-        </Text>
+        <View style={styles.rightSide}>
+          <Text style={styles.messageTime}>{timeText}</Text>
+
+          {hasUnread ? (
+            <View style={styles.unreadBadge}>
+              <Text style={styles.unreadBadgeText}>
+                {unreadCount > 99 ? '99+' : unreadCount}
+              </Text>
+            </View>
+          ) : null}
+        </View>
       </TouchableOpacity>
     );
   };
 
-  const renderEmptyState = () => (
-    <View style={styles.emptyState}>
-      <Ionicons name="chatbubbles-outline" size={54} color="#C9C9C9" />
-      <Text style={styles.emptyTitle}>No messages yet</Text>
-      <Text style={styles.emptySubtitle}>Start a conversation</Text>
-    </View>
-  );
+  const renderEmptyState = () => {
+    if (!authReady) return null;
+
+    return (
+      <View style={styles.emptyState}>
+        <Ionicons name="chatbubbles-outline" size={54} color="#C9C9C9" />
+        <Text style={styles.emptyTitle}>No messages yet</Text>
+        <Text style={styles.emptySubtitle}>Start a conversation</Text>
+      </View>
+    );
+  };
 
   return (
     <>
@@ -163,7 +215,11 @@ export default function GroupsScreen() {
               <View style={styles.titleSection}>
                 <Text style={styles.title}>Messages</Text>
                 <Text style={styles.subtitle}>
-                  {chats.length > 0 ? 'Your conversations' : 'No conversations yet'}
+                  {chats.length > 0
+                    ? `You have ${totalUnreadCount} unread message${totalUnreadCount === 1 ? '' : 's'}`
+                    : authReady
+                    ? 'No conversations yet'
+                    : 'Loading conversations...'}
                 </Text>
               </View>
 
@@ -301,6 +357,7 @@ const styles = StyleSheet.create({
 
   avatarWrap: {
     marginRight: 12,
+    position: 'relative',
   },
 
   avatar: {
@@ -308,6 +365,18 @@ const styles = StyleSheet.create({
     height: 56,
     borderRadius: 28,
     backgroundColor: '#D8D8D8',
+  },
+
+  unreadDot: {
+    position: 'absolute',
+    top: 2,
+    right: 2,
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: '#F58500',
+    borderWidth: 2,
+    borderColor: '#F3F3F3',
   },
 
   messageContent: {
@@ -328,11 +397,38 @@ const styles = StyleSheet.create({
     color: '#666',
   },
 
+  messagePreviewUnread: {
+    color: '#111',
+    fontWeight: '600',
+  },
+
+  rightSide: {
+    alignItems: 'flex-end',
+    justifyContent: 'flex-start',
+    minWidth: 70,
+  },
+
   messageTime: {
     fontSize: 13,
     color: '#666',
-    alignSelf: 'flex-start',
     marginTop: 4,
+  },
+
+  unreadBadge: {
+    minWidth: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: '#F58500',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 6,
+    marginTop: 8,
+  },
+
+  unreadBadgeText: {
+    color: '#fff',
+    fontSize: 11,
+    fontWeight: '700',
   },
 
   emptyState: {

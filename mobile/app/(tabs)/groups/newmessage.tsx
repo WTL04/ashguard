@@ -12,7 +12,7 @@ import { StatusBar } from 'expo-status-bar';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { collection, getDocs } from 'firebase/firestore';
+import { collection, getDocs, doc, getDoc } from 'firebase/firestore';
 import { auth, db } from '@/lib/firebaseConfig';
 import { getOrCreateChat } from '@/lib/services/chatService';
 
@@ -46,13 +46,43 @@ export default function NewMessageScreen() {
 
   const [search, setSearch] = useState('');
   const [matchedUsers, setMatchedUsers] = useState<AppUser[]>([]);
+  const [currentUserProfile, setCurrentUserProfile] = useState<AppUser | null>(null);
 
   useEffect(() => {
-    loadMatchedUsers();
+    loadUsersForMessaging();
+    loadCurrentUserProfile();
   }, []);
 
-  const loadMatchedUsers = async () => {
+  const loadCurrentUserProfile = async () => {
     try {
+      const currentUid = auth.currentUser?.uid;
+      if (!currentUid) return;
+
+      const currentUserRef = doc(db, 'users', currentUid);
+      const currentUserSnap = await getDoc(currentUserRef);
+
+      if (currentUserSnap.exists()) {
+        setCurrentUserProfile(currentUserSnap.data() as AppUser);
+      }
+    } catch (error) {
+      console.log('Error loading current user profile:', error);
+    }
+  };
+
+  const loadUsersForMessaging = async () => {
+    try {
+      const snapshot = await getDocs(collection(db, 'users'));
+      const allUsers = snapshot.docs.map((doc) => doc.data() as AppUser);
+
+      // TEMPORARY EMULATOR VERSION:
+      // Show all Firestore users directly, including self for testing.
+      const allowedUsers = allUsers.filter((user) => !!user.uid);
+
+      setMatchedUsers(allowedUsers);
+
+      /*
+      ORIGINAL CONTACT-MATCHING VERSION (KEEP FOR REAL DEVICE USE LATER)
+
       const currentUid = auth.currentUser?.uid;
 
       const contactsRaw = await AsyncStorage.getItem(GROUP_MEMBERS_KEY);
@@ -64,9 +94,6 @@ export default function NewMessageScreen() {
           .filter(Boolean)
       );
 
-      const snapshot = await getDocs(collection(db, 'users'));
-      const allUsers = snapshot.docs.map((doc) => doc.data() as AppUser);
-
       const allowedUsers = allUsers.filter((user) => {
         const normalizedUserPhone = normalizePhone(user.phone);
         const isSelf = user.uid === currentUid;
@@ -76,8 +103,9 @@ export default function NewMessageScreen() {
       });
 
       setMatchedUsers(allowedUsers);
+      */
     } catch (error) {
-      console.log('Error loading matched users:', error);
+      console.log('Error loading users for messaging:', error);
     }
   };
 
@@ -107,21 +135,27 @@ export default function NewMessageScreen() {
       <TouchableOpacity
         style={styles.contactRow}
         onPress={async () => {
-          if (!auth.currentUser) return;
+          if (!auth.currentUser || !currentUserProfile) return;
 
           const currentUser = {
-            uid: auth.currentUser.uid,
-            firstName: 'You',
-            lastName: '',
+            uid: currentUserProfile.uid,
+            firstName: currentUserProfile.firstName,
+            lastName: currentUserProfile.lastName,
+            username: currentUserProfile.username || '',
+            photoURL: currentUserProfile.photoURL || '',
           };
 
           const otherUser = item;
 
           try {
             const chatId = await getOrCreateChat(currentUser, otherUser);
+
             router.replace({
-            pathname: '/(tabs)/groups/chat',
-            params: { chatId, name: `${item.firstName} ${item.lastName}` },
+              pathname: '/(tabs)/groups/chat',
+              params: {
+                chatId,
+                name: `${item.firstName} ${item.lastName}`,
+              },
             });
           } catch (error) {
             console.log('Error creating/opening chat:', error);

@@ -22,6 +22,7 @@ import {
   serverTimestamp,
   updateDoc,
   doc,
+  getDoc,
 } from 'firebase/firestore';
 import { db, auth } from '@/lib/firebaseConfig';
 
@@ -81,23 +82,65 @@ export default function ChatScreen() {
     return () => clearTimeout(timer);
   }, [messages]);
 
+  useEffect(() => {
+    const clearUnreadForCurrentUser = async () => {
+      const currentUid = auth.currentUser?.uid;
+      if (!chatId || !currentUid) return;
+
+      try {
+        await updateDoc(doc(db, 'chats', String(chatId)), {
+          [`unreadCounts.${currentUid}`]: 0,
+        });
+      } catch (error) {
+        console.log('Error clearing unread count:', error);
+      }
+    };
+
+    clearUnreadForCurrentUser();
+  }, [chatId]);
+
   const sendMessage = async () => {
     const trimmed = input.trim();
-    if (!trimmed || !chatId) return;
+    const currentUid = auth.currentUser?.uid;
 
-    await addDoc(collection(db, 'chats', String(chatId), 'messages'), {
-      text: trimmed,
-      senderId: auth.currentUser?.uid,
-      createdAt: serverTimestamp(),
-    });
+    if (!trimmed || !chatId || !currentUid) return;
 
-    await updateDoc(doc(db, 'chats', String(chatId)), {
-      lastMessage: trimmed,
-      lastMessageAt: serverTimestamp(),
-      lastMessageSenderId: auth.currentUser?.uid,
-    });
+    try {
+      const chatRef = doc(db, 'chats', String(chatId));
+      const chatSnap = await getDoc(chatRef);
 
-    setInput('');
+      if (!chatSnap.exists()) return;
+
+      const chatData = chatSnap.data();
+      const participants: string[] = chatData.participants || [];
+
+      const otherParticipantIds = participants.filter((uid) => uid !== currentUid);
+
+      const unreadCounts = { ...(chatData.unreadCounts || {}) };
+
+      otherParticipantIds.forEach((uid) => {
+        unreadCounts[uid] = (unreadCounts[uid] || 0) + 1;
+      });
+
+      unreadCounts[currentUid] = 0;
+
+      await addDoc(collection(db, 'chats', String(chatId), 'messages'), {
+        text: trimmed,
+        senderId: currentUid,
+        createdAt: serverTimestamp(),
+      });
+
+      await updateDoc(chatRef, {
+        lastMessage: trimmed,
+        lastMessageAt: serverTimestamp(),
+        lastMessageSenderId: currentUid,
+        unreadCounts,
+      });
+
+      setInput('');
+    } catch (error) {
+      console.log('Error sending message:', error);
+    }
   };
 
   const renderMessage = ({ item }: { item: Message }) => {
