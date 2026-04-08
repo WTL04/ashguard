@@ -48,6 +48,7 @@ const kmhToMph = (kmh: number): string => `${(kmh * 0.621371).toFixed(1)} mph`;
 
 export default function MapLibre() {
   const cameraRef = useRef<CameraRef>(null);
+  const hasCenteredOnUserRef = useRef(false);
 
   const [activeFilter, setActiveFilter] = useState<FilterId>('all');
   const [locationGranted, setLocationGranted] = useState(false);
@@ -69,39 +70,27 @@ export default function MapLibre() {
   const [weatherError, setWeatherError] = useState<string | null>(null);
   const [selectedStation, setSelectedStation] = useState<GeoJSON.Feature | null>(null);
 
-  // Request location permission
+  // Request location permission — actual coords come from UserLocation onUpdate
   useEffect(() => {
     (async () => {
       try {
         const { status } = await Location.requestForegroundPermissionsAsync();
-        if (status !== 'granted') return;
-        setLocationGranted(true);
-        try {
-          const loc = await Location.getCurrentPositionAsync({
-            accuracy: Location.Accuracy.Low,
-          });
-          setUserCoords([loc.coords.longitude, loc.coords.latitude]);
-        } catch {
-          // GPS unavailable on emulator — fall back to CA center silently
-          console.warn('GPS unavailable, defaulting to California center');
-        }
+        if (status === 'granted') setLocationGranted(true);
       } catch (err) {
         console.warn('Location permission error:', err);
       }
     })();
   }, []);
 
-  // Once map is ready, fly to user location if we have it, otherwise stay on CA
+  // Once map is ready AND we have live coords (from onUpdate), fly there once
   useEffect(() => {
-    if (!mapReady || !cameraRef.current) return;
-    if (userCoords) {
-      cameraRef.current.setCamera({
-        centerCoordinate: userCoords,
-        zoomLevel: 13,
-        animationMode: 'flyTo',
-        animationDuration: 800,
-      });
-    }
+    if (!mapReady || !userCoords || hasCenteredOnUserRef.current || !cameraRef.current) return;
+    hasCenteredOnUserRef.current = true;
+    cameraRef.current.setCamera({
+      centerCoordinate: userCoords,
+      zoomLevel: 13,
+      animationDuration: 0,
+    });
   }, [mapReady, userCoords]);
 
   // Fetch and separate fire data into individual collections
@@ -208,6 +197,12 @@ export default function MapLibre() {
     }
   };
 
+  const handleUserLocationUpdate = (location: any) => {
+    const coords = location?.coords;
+    if (!coords) return;
+    setUserCoords([coords.longitude, coords.latitude]);
+  };
+
   const handleLocateMe = () => {
     if (!cameraRef.current) return;
     if (userCoords) {
@@ -226,11 +221,6 @@ export default function MapLibre() {
       });
     }
   };
-
-  // Set user location, use California coords if UserLocation doesnt work
-  const defaultSettings = userCoords
-    ? { centerCoordinate: userCoords, zoomLevel: 13 }
-    : { centerCoordinate: CA_CENTER, zoomLevel: CA_ZOOM };
 
   // Counts for each data type
   const hotspotsCount = hotspotsData?.features.length ?? 0;
@@ -255,7 +245,7 @@ export default function MapLibre() {
           ref={cameraRef}
           defaultSettings={{ centerCoordinate: CA_CENTER, zoomLevel: CA_ZOOM }}
         />
-        {locationGranted && <UserLocation visible={locationGranted} />}
+        {locationGranted && <UserLocation visible={locationGranted} onUpdate={handleUserLocationUpdate} />}
 
         {/* Satellite Hotspots Layer - orange circles */}
         {(activeFilter === 'all' || activeFilter === 'hotspots') && hotspotsData && (
@@ -461,11 +451,11 @@ export default function MapLibre() {
           </TouchableOpacity>
 
           <TouchableOpacity
-            style={styles.fabBtn}
+            style={styles.locateBtn}
             onPress={handleLocateMe}
             activeOpacity={0.85}
           >
-            <Ionicons name="locate-outline" size={20} color={Colors.primary} />
+            <Ionicons name="locate" size={20} color="#fff" />
           </TouchableOpacity>
         </View>
 
@@ -768,6 +758,20 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: '700',
     color: '#2563EB',
+  },
+
+  locateBtn: {
+    width: 46,
+    height: 46,
+    borderRadius: 23,
+    backgroundColor: '#F58500',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOpacity: 0.18,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 6,
   },
 
   // Floating buttons
