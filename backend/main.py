@@ -19,10 +19,31 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
-CACHE_KEY = "ashguard:latest_fire_data"
-CACHE_TTL = 300  # seconds before cache expires
-POLL_INTERVAL = 300  # how often the background worker refreshes
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379") or "redis://127.0.0.1:6379"
+
+# each dataset has its own poll interval and ttl (dead man's switch)
+CACHE_CONFIGS = {
+    "satellite_hotspots": {
+        "key": "ashguard:satellite_hotspots",
+        "poll": 300,  # 5 mins
+        "ttl": 600,  # 10 mins
+    },
+    "fire_perimeters": {
+        "key": "ashguard:fire_perimeters",
+        "poll": 600,  # 10 mins
+        "ttl": 1200,  # 20 mins
+    },
+    "prescribed_fires": {
+        "key": "ashguard:prescribed_fires",
+        "poll": 3600,  # 60 mins
+        "ttl": 7200,  # 120 mins
+    },
+    "shelters": {
+        "key": "ashguard:shelters",
+        "poll": 600,  # 10 min
+        "ttl": 1200,  # 20 mins
+    },
+}
 
 redis_client: redis_async.Redis = None
 
@@ -31,16 +52,16 @@ redis_client: redis_async.Redis = None
 """
 
 
-class FireDataResponse(BaseModel):
+class GeoDataResponse(BaseModel):
     # GeoJSON FeatureCollection
     satellite_hotspots: dict
     fire_perimeters: dict
     prescribed_fires: dict
+    shelters: dict
 
 
 class CacheStatusResponse(BaseModel):
-    cache_exists: bool
-    ttl_seconds_remaining: int
+    datasets: dict
     redis_used_memory: str | None = None
     redis_connected: bool
     error: str | None = None
@@ -132,7 +153,6 @@ async def fetch_satellite_api(state: str | None = None) -> dict:
                     f"Failed to fetch from {satellite}: status {r.status_code}"
                 )
 
-    # FIX: always return a valid FeatureCollection, never an empty list
     if not df_list:
         return EMPTY_FEATURE_COLLECTION
 
@@ -195,7 +215,6 @@ async def fetch_prescribed_fires(state: str | None = None) -> dict:
         return r.json()
 
 
-# TEST: Testing fire perimeters with 2025 california wildfire perimeters
 async def fetch_2026_Year_to_Date_fire_perimeters() -> dict:
     """
     Returns GeoJSON of 2026 Year to Date fire perimeter data from NIFC.
@@ -218,44 +237,63 @@ async def fetch_2026_Year_to_Date_fire_perimeters() -> dict:
         return r.json()
 
 
-"""
---- Background Worker ---
-"""
+async def fetch_shelters() -> dict:
+    params = {
+        "where": "1=1",
+        "outFields": "*",
+        "returnGeometry": "true",
+        "f": "geojson",
+        "outSR": 4326,
+        "resultRecordCount": 2000,
+    }
+
+    url = "https://services.arcgis.com/pGfbNJoYypmNq86F/arcgis/rest/services/Open_Shelters/FeatureServer/0/query"
+    logger.info("Fetching currently available Red Cross shelters")
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        r = await client.get(url, params=params)
+        r.raise_for_status()
+        return r.json()
 
 
-async def data_ingestion_worker():
+"""
+--- Background Workers ---
+"""
+
+# Maps each dataset name to its fetch function
+FETCH_FUNCTIONS = {
+    "satellite_hotspots": lambda: fetch_satellite_api(state="CA"),
+    "fire_perimeters": fetch_2026_Year_to_Date_fire_perimeters,
+    "prescribed_fires": lambda: fetch_prescribed_fires(state="CA"),
+    "shelters": fetch_shelters,
+}
+
+
+async def dataset_worker(name: str):
+    """
+    Independent refresh loop for a single dataset.
+    Sleeps for poll interval between fetches.
+    TTL acts as a dead man's switch: if this worker dies, Redis
+    evicts the key after ttl seconds rather than serving stale data forever.
+    """
+    config = CACHE_CONFIGS[name]
+    key = config["key"]
+    poll = config["poll"]
+    ttl = config["ttl"]
+    fetch_fn = FETCH_FUNCTIONS[name]
+
     while True:
         try:
-            (
-                satellite_hotspots,
-                fire_perimeters,
-                prescribed_fires,
-            ) = await asyncio.gather(
-                fetch_satellite_api(state="CA"),
-                fetch_2026_Year_to_Date_fire_perimeters(),
-                fetch_prescribed_fires(state="CA"),
-            )
-
-            # FIX: store as a named dict so FireDataResponse keys match
-            payload = json.dumps(
-                {
-                    "satellite_hotspots": satellite_hotspots,
-                    "fire_perimeters": fire_perimeters,
-                    "prescribed_fires": prescribed_fires,
-                }
-            )
-            await redis_client.setex(CACHE_KEY, CACHE_TTL, payload)
-            logger.info("Cache updated with real API data.")
-
-            await asyncio.sleep(POLL_INTERVAL)
-
+            data = await fetch_fn()
+            await redis_client.setex(key, ttl, json.dumps(data))
+            logger.info(f"[{name}] Cache updated.")
         except asyncio.CancelledError:
-            logger.info("Worker shutting down.")
+            logger.info(f"[{name}] Worker shutting down.")
             break
+        except Exception as e:
+            logger.error(f"[{name}] Fetch failed: {e}")
 
-        except Exception as err:
-            logger.error(f"Worker error: {err}")
-            await asyncio.sleep(10)
+        await asyncio.sleep(poll)
 
 
 """
@@ -265,10 +303,11 @@ async def data_ingestion_worker():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # FIX: validate NASA key at startup so we fail fast, not mid-request
+    # validate API key
     if not os.getenv("NASA_FIRMS_API_KEY"):
         raise RuntimeError("NASA_FIRMS_API_KEY environment variable is not set")
 
+    # connect to redis
     global redis_client
     redis_client = redis_async.Redis.from_url(
         REDIS_URL, encoding="utf-8", decode_responses=True
@@ -276,17 +315,21 @@ async def lifespan(app: FastAPI):
 
     try:
         await redis_client.ping()
-        logger.info("Redis connected successfully.")
+        logger.info(f"Redis connected successfully at: {REDIS_URL}.")
     except Exception as e:
         logger.error(f"Redis connection failed: {e}")
 
-    task = asyncio.create_task(data_ingestion_worker())
+    # create background workers tasks for each config in CACHE_CONFIGS
+    tasks = [asyncio.create_task(dataset_worker(name)) for name in CACHE_CONFIGS]
+
     yield
-    task.cancel()
-    try:
-        await task
-    except asyncio.CancelledError:
-        pass
+
+    # cancel all backgorund tasks
+    for task in tasks:
+        task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
+
+    # close redis connection
     await redis_client.aclose()
 
 
@@ -303,46 +346,58 @@ def read_root():
     return {"status": "ok", "message": "AshGuard API is running"}
 
 
-# FIX: response_model wired up so Pydantic validates and docs are accurate
-@app.get("/api/v1/fires", response_model=FireDataResponse)
+@app.get("/api/v1/geoData", response_model=GeoDataResponse)
 async def get_cached_fires():
-    """Returns fire data from Redis cache."""
-    raw = await redis_client.get(CACHE_KEY)
-    if raw:
-        return json.loads(raw)
-    # FIX: content must be bytes, and use JSONResponse for consistency
-    return JSONResponse(
-        status_code=503,
-        content={"detail": "Data not yet available, retry shortly"},
-    )
+    """Returns all geo data from Redis cache. Missing datasets fall back to empty FeatureCollections."""
+    results = {}
+    missing = []
+
+    for name, config in CACHE_CONFIGS.items():
+        raw = await redis_client.get(config["key"])
+        if raw:
+            results[name] = json.loads(raw)
+        else:
+            results[name] = EMPTY_FEATURE_COLLECTION
+            missing.append(name)
+
+    if missing:
+        logger.warning(f"Serving empty collections for: {missing}")
+
+    return results
 
 
-# FIX: response_model wired up
 @app.get("/api/v1/cache/status", response_model=CacheStatusResponse)
 async def cache_status():
-    """Shows Redis cache health and TTL remaining."""
+    """Shows per-dataset Redis cache health and TTL remaining."""
     try:
-        ttl = await redis_client.ttl(CACHE_KEY)
-        exists = await redis_client.exists(CACHE_KEY)
         memory = await redis_client.info("memory")
+        datasets = {}
+
+        for name, config in CACHE_CONFIGS.items():
+            key = config["key"]
+            ttl = await redis_client.ttl(key)
+            exists = await redis_client.exists(key)
+            datasets[name] = {
+                "cache_exists": bool(exists),
+                "ttl_seconds_remaining": ttl,
+            }
+
         return CacheStatusResponse(
-            cache_exists=bool(exists),
-            ttl_seconds_remaining=ttl,
+            datasets=datasets,
             redis_used_memory=memory.get("used_memory_human"),
             redis_connected=True,
         )
     except Exception as e:
         return CacheStatusResponse(
-            cache_exists=False,
-            ttl_seconds_remaining=-1,
+            datasets={},
             redis_connected=False,
             error=str(e),
         )
 
 
-# FIX: changed from GET to DELETE — mutating state shouldn't be a GET
 @app.delete("/api/v1/cache/flush")
 async def flush_cache():
-    """Clears the cache — useful for testing."""
-    await redis_client.delete(CACHE_KEY)
-    return {"message": "Cache cleared"}
+    """Clears all dataset caches -- useful for testing."""
+    keys = [config["key"] for config in CACHE_CONFIGS.values()]
+    await redis_client.delete(*keys)
+    return {"message": "All caches cleared", "keys_flushed": keys}
