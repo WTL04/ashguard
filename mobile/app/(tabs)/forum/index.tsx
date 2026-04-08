@@ -413,7 +413,7 @@ export default function ForumScreen() {
           onPress={() => router.push('/forum/create' as any)}
           activeOpacity={0.85}
         >
-          <Text style={styles.fabText}>Create Thread</Text>
+          <Ionicons name="add" size={32} color="#FFFFFF" />
         </TouchableOpacity>
       </View>
     </SafeAreaView>
@@ -484,7 +484,7 @@ const styles = StyleSheet.create({
   noComments: { fontSize: 13, color: '#9CA3AF', textAlign: 'center', paddingVertical: 14 },
 
   // FAB
-  fabContainer: { position: 'absolute', bottom: Platform.OS === 'ios' ? 16 : 12, left: 0, right: 0, alignItems: 'center' },
-  fab: { backgroundColor: Colors.primary, borderRadius: 24, paddingVertical: 13, paddingHorizontal: 48, shadowColor: '#000', shadowOpacity: 0.18, shadowRadius: 10, shadowOffset: { width: 0, height: 3 }, elevation: 6 },
+  fabContainer: { position: 'absolute', bottom: Platform.OS === 'ios' ? 16 : 12, right: 16, alignItems: 'flex-end' },
+  fab: { width: 60, height: 60, borderRadius: 30, backgroundColor: Colors.primary, alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOpacity: 0.18, shadowRadius: 10, shadowOffset: { width: 0, height: 3 }, elevation: 6 },
   fabText: { fontSize: 15, fontWeight: '700', color: '#FFFFFF', letterSpacing: 0.2 },
 });
