@@ -13,6 +13,7 @@ from datetime import date
 import pandas as pd
 from io import StringIO
 import httpx
+import aiohttp
 
 load_dotenv()
 
@@ -40,8 +41,13 @@ CACHE_CONFIGS = {
     },
     "shelters": {
         "key": "ashguard:shelters",
-        "poll": 600,  # 10 min
+        "poll": 600,  # 10 mins
         "ttl": 1200,  # 20 mins
+    },
+    "weather_stations": {
+        "key": "ashguard:weather_stations",
+        "poll": 300,  # 5 mins
+        "ttl": 600,  # 10 mins
     },
 }
 
@@ -58,6 +64,7 @@ class GeoDataResponse(BaseModel):
     fire_perimeters: dict
     prescribed_fires: dict
     shelters: dict
+    weather_stations: dict
 
 
 class CacheStatusResponse(BaseModel):
@@ -97,6 +104,122 @@ def dicts_to_geojson(data_list: list) -> dict:
         }
         features.append(feature)
 
+    return {"type": "FeatureCollection", "features": features}
+
+
+"""
+--- Weather Data Helpers ---
+"""
+
+# California weather station IDs (NWS METAR)
+CALIFORNIA_STATION_IDS = [
+    "KNGZ", "KAAT", "KAPV", "KACV", "KAUN", "KAVX", "KBFL", "KBAB", "KBUO", "KBYS",
+    "KL35", "KBIH", "KBLH", "KL08", "KO57", "KBAN", "KBUR", "KBNY", "KC83", "KCXL",
+    "KCMA", "KCZZ", "KNFG", "KCRQ", "KO59", "KCIC", "KNID", "KCNO", "KO22", "KCCR",
+    "KAJO", "KSNA", "KCEC", "KDAG", "KDWA", "KEDU", "KDLO", "KEDW", "K9L2", "KNJK",
+    "KEMT", "KBLU", "KEKA", "KL18", "KFOT", "KFCH", "KFAT", "KFUL", "KGOO", "KHAF",
+    "KHJO", "KO18", "KHHR", "KHWD", "KHES", "KHMT", "KCVH", "KHGT", "KNRS", "KIPL",
+    "KIYK", "KJAQ", "KWJF", "KPOC", "KWHP", "KNLC", "KLHM", "KLLR", "KLVK", "KLPC",
+    "KLGB", "KSLI", "KCQT", "KLAX", "KMAE", "KMMH", "KMYV", "KMHR", "KMCC", "KMER",
+    "KMCE", "KNKX", "KMOD", "KNUQ", "KMHV", "KSIY", "KMRY", "KMHS", "KMWS", "KF70",
+    "KAPC", "KEED", "K3A6", "KNZY", "KDVO", "KOAK", "KL52", "KOKB", "KNXF", "KONT",
+    "KOVE", "KOXR", "KGXA", "KPMD", "KPSP", "KPAO", "KPRB", "KO69", "KPVF", "KNTD",
+    "KPTV", "K87Q", "KRNM", "KRBL", "KRDD", "KREI", "KO32", "KO88", "KRAL", "KRIV",
+    "KSAC", "KSMF", "KSNS", "KCPU", "KSBD", "KSQL", "KNUC", "KSDB", "KSDM", "KSAN",
+    "KMYF", "KSEE", "KSFO", "KSJC", "KRHV", "KSBP", "KE16", "KNSI", "KSBA", "KSMX",
+    "KSMO", "KSTS", "KIZA", "KO87", "KTVL", "KSCK", "KSVE", "KTSP", "KTRM", "KTOA",
+    "KTCY", "KSUU", "KO86", "KTRK", "KNXP", "KUKI", "KCCB", "KVCB", "KVBG", "KXVW",
+    "KVNY", "KVCV", "KVIS", "KWVI", "KO54"
+]
+
+
+NWS_HEADERS = {
+    "User-Agent": "AshGuard/1.0 (ashguard-project@example.com)",
+    "Accept": "application/geo+json",
+}
+
+
+async def fetch_single_station(
+    session: aiohttp.ClientSession,
+    station_id: str,
+    semaphore: asyncio.Semaphore,
+) -> dict | None:
+    """
+    Fetches the most recent valid observation for one NWS station.
+    Returns a GeoJSON Feature, or None if the station has no usable data.
+    """
+    async with semaphore:
+        url = f"https://api.weather.gov/stations/{station_id}/observations"
+        try:
+            await asyncio.sleep(0.2)  # small delay to stay within NWS rate limits
+            async with session.get(url, headers=NWS_HEADERS, ssl=False) as response:
+                response.raise_for_status()
+                data = await response.json(content_type=None)
+
+                best_obs = next(
+                    (
+                        obs
+                        for obs in data.get("features", [])
+                        if obs.get("properties", {}).get("temperature", {}).get("value")
+                        is not None
+                    ),
+                    None,
+                )
+
+                if best_obs is None:
+                    return None
+
+                props = best_obs.get("properties", {})
+                coords = best_obs.get("geometry", {}).get("coordinates", [None, None])
+
+                return {
+                    "type": "Feature",
+                    "geometry": {
+                        "type": "Point",
+                        "coordinates": coords,  # [lon, lat]
+                    },
+                    "properties": {
+                        "stationId": station_id,
+                        "stationName": props.get("stationName", station_id),
+                        "temperature": props.get("temperature", {}).get("value"),
+                        "relativeHumidity": props.get("relativeHumidity", {}).get(
+                            "value"
+                        ),
+                        "dewpoint": props.get("dewpoint", {}).get("value"),
+                        "windSpeed": props.get("windSpeed", {}).get("value"),
+                        "timestamp": props.get("timestamp"),
+                    },
+                }
+
+        except aiohttp.ClientResponseError as e:
+            logger.warning(f"HTTP {e.status} for station {station_id}")
+            return None
+        except Exception as e:
+            logger.warning(f"Error fetching station {station_id}: {e}")
+            return None
+
+
+async def fetch_weather_data() -> dict:
+    """
+    Fetches current weather observations for all California NWS stations
+    and returns a GeoJSON FeatureCollection.
+    """
+    logger.info(
+        f"Fetching weather data for {len(CALIFORNIA_STATION_IDS)} CA stations..."
+    )
+
+    semaphore = asyncio.Semaphore(5)
+
+    async with aiohttp.ClientSession() as session:
+        tasks = [
+            fetch_single_station(session, station_id, semaphore)
+            for station_id in CALIFORNIA_STATION_IDS
+        ]
+        results = await asyncio.gather(*tasks)
+
+    features = [result for result in results if result is not None]
+
+    logger.info(f"Weather fetch complete: {len(features)} stations with valid data.")
     return {"type": "FeatureCollection", "features": features}
 
 
@@ -268,6 +391,7 @@ FETCH_FUNCTIONS = {
     "fire_perimeters": lambda: fetch_fire_perimeters(state="CA"),
     "prescribed_fires": lambda: fetch_prescribed_fires(state="CA"),
     "shelters": fetch_shelters,
+    "weather_stations": fetch_weather_data,
 }
 
 
@@ -326,7 +450,7 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    # cancel all backgorund tasks
+    # cancel all background tasks
     for task in tasks:
         task.cancel()
     await asyncio.gather(*tasks, return_exceptions=True)
@@ -348,7 +472,7 @@ def read_root():
     return {"status": "ok", "message": "AshGuard API is running"}
 
 
-@app.get("/api/v1/geoData")
+@app.get("/api/v1/geoData", response_model=GeoDataResponse)
 async def get_cached_data():
     """Returns all geo data from Redis cache. Missing datasets fall back to empty FeatureCollections."""
     parts = []
