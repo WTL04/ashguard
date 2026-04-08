@@ -440,20 +440,30 @@ export default function MapLibre() {
 
         {/* Floating action buttons */}
         <View style={styles.fab} pointerEvents="box-none">
-          <TouchableOpacity style={styles.fabBtn} activeOpacity={0.85}>
-            <Ionicons name="layers-outline" size={20} color="#374151" />
-            <Text style={styles.fabLabel}>Layers</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity style={styles.fabBtn} activeOpacity={0.85}>
-            <Ionicons name="location-outline" size={20} color="#374151" />
-            <Text style={styles.fabLabel}>Report</Text>
+          <TouchableOpacity
+            style={styles.roundMapButton}
+            activeOpacity={0.85}
+            accessibilityRole="button"
+            accessibilityLabel="Layers"
+          >
+            <Ionicons name="layers-outline" size={20} color="#fff" />
           </TouchableOpacity>
 
           <TouchableOpacity
-            style={styles.locateBtn}
+            style={styles.roundMapButton}
+            activeOpacity={0.85}
+            accessibilityRole="button"
+            accessibilityLabel="Report"
+          >
+            <Ionicons name="flag-outline" size={20} color="#fff" />
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.roundMapButton}
             onPress={handleLocateMe}
             activeOpacity={0.85}
+            accessibilityRole="button"
+            accessibilityLabel="Locate me"
           >
             <Ionicons name="locate" size={20} color="#fff" />
           </TouchableOpacity>
@@ -760,7 +770,14 @@ const styles = StyleSheet.create({
     color: '#2563EB',
   },
 
-  locateBtn: {
+  // Floating buttons
+  fab: {
+    position: 'absolute',
+    right: 12,
+    top: 130,
+    gap: 8,
+  },
+  roundMapButton: {
     width: 46,
     height: 46,
     borderRadius: 23,
@@ -772,33 +789,6 @@ const styles = StyleSheet.create({
     shadowRadius: 6,
     shadowOffset: { width: 0, height: 2 },
     elevation: 6,
-  },
-
-  // Floating buttons
-  fab: {
-    position: 'absolute',
-    right: 12,
-    top: 130,
-    gap: 8,
-  },
-  fabBtn: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 10,
-    paddingVertical: 8,
-    paddingHorizontal: 10,
-    alignItems: 'center',
-    shadowColor: '#000',
-    shadowOpacity: 0.12,
-    shadowRadius: 6,
-    shadowOffset: { width: 0, height: 2 },
-    elevation: 4,
-    minWidth: 56,
-  },
-  fabLabel: {
-    fontSize: 10,
-    fontWeight: '600',
-    color: '#374151',
-    marginTop: 2,
   },
 
   // Popup (shared by fire and weather)
