@@ -519,49 +519,54 @@ export default function MapLibre() {
             )}
 
             {/* Fire Perimeter Pop Up */}
-            {selectedFire.properties?.poly_IncidentName && (
+            {selectedFire.properties?.incident_name && (
               <Text style={styles.popupDetail}>
-                🔥 Incident Name: {selectedFire.properties.poly_IncidentName}
+                🔥 Incident Name: {selectedFire.properties.incident_name}
               </Text>
             )}
-            {selectedFire.properties?.attr_POOCounty && (
+            {selectedFire.properties?.incident_number && (
               <Text style={styles.popupDetail}>
-                📍 County: {selectedFire.properties.attr_POOCounty}, {selectedFire.properties.attr_POOState}
+                📋 Incident #: {selectedFire.properties.incident_number}
               </Text>
             )}
-            {selectedFire.properties?.poly_Acres_AutoCalc && (
+            {selectedFire.properties?.source && (
               <Text style={styles.popupDetail}>
-                📐 Estimated Acres: {Math.round(selectedFire.properties.poly_Acres_AutoCalc).toLocaleString()}
+                📡 Source: {selectedFire.properties.source}
               </Text>
             )}
-            {selectedFire.properties?.attr_PercentContained != null && (
+            {selectedFire.properties?.mission && (
               <Text style={styles.popupDetail}>
-                🧯 Contained: {selectedFire.properties.attr_PercentContained}%
+                🎯 Mission: {selectedFire.properties.mission}
               </Text>
             )}
-            {selectedFire.properties?.attr_FireBehaviorGeneral && (
+            {selectedFire.properties?.displayStatus && (
               <Text style={styles.popupDetail}>
-                ⚠️ Fire Behavior: {selectedFire.properties.attr_FireBehaviorGeneral}
+                📊 Status: {selectedFire.properties.displayStatus}
               </Text>
             )}
-            {selectedFire.properties?.attr_FireDiscoveryDateTime && (
+            {selectedFire.properties?.description && (
               <Text style={styles.popupDetail}>
-                🗓️ Discovered: {new Date(selectedFire.properties.attr_FireDiscoveryDateTime).toLocaleDateString()}
+                📝 Description: {selectedFire.properties.description}
               </Text>
             )}
-            {selectedFire.properties?.attr_TotalIncidentPersonnel != null && (
+            {selectedFire.properties?.area_acres && (
               <Text style={styles.popupDetail}>
-                👷 Personnel Assigned: {selectedFire.properties.attr_TotalIncidentPersonnel.toLocaleString()}
+                📐 Area: {selectedFire.properties.area_acres.toFixed(3)} acres
               </Text>
             )}
-            {selectedFire.properties?.attr_FireCause && (
+            {selectedFire.properties?.FireDiscoveryDate && (
               <Text style={styles.popupDetail}>
-                💡 Cause: {selectedFire.properties.attr_FireCause}
+                🗓️ Discovered: {new Date(selectedFire.properties.FireDiscoveryDate).toLocaleDateString()}
               </Text>
             )}
-            {selectedFire.properties?.attr_ContainmentDateTime && (
+            {selectedFire.properties?.CreationDate && (
               <Text style={styles.popupDetail}>
-                ✅ Contained On: {new Date(selectedFire.properties.attr_ContainmentDateTime).toLocaleDateString()}
+                📅 Created: {new Date(selectedFire.properties.CreationDate).toLocaleDateString()}
+              </Text>
+            )}
+            {selectedFire.properties?.EditDate && (
+              <Text style={styles.popupDetail}>
+                ✏️ Updated: {new Date(selectedFire.properties.EditDate).toLocaleDateString()}
               </Text>
             )}
           </View>
