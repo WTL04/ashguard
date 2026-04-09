@@ -8,6 +8,8 @@ import {
   ScrollView,
   Platform,
   ActivityIndicator,
+  Modal,
+  Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -16,7 +18,12 @@ import * as MapLibreRN from "@maplibre/maplibre-react-native";
 import { Camera, UserLocation, type CameraRef, ShapeSource, FillLayer, LineLayer, SymbolLayer, CircleLayer } from "@maplibre/maplibre-react-native";
 const { MapView } = MapLibreRN;
 import { Colors } from '@/constants/colors';
-import { fetchFireData, fetchWeatherData } from "../../services/mapApi";
+import {
+  fetchFireData,
+  fetchWeatherData,
+  submitSelfReport,
+  fetchSelfReports,
+} from "../../services/mapApi";
 
 // ── Filter chip config ───────────────────────────────────────────────────────
 const FILTERS = [
@@ -69,6 +76,11 @@ export default function MapLibre() {
   const [weatherLoading, setWeatherLoading] = useState(false);
   const [weatherError, setWeatherError] = useState<string | null>(null);
   const [selectedStation, setSelectedStation] = useState<GeoJSON.Feature | null>(null);
+
+  // Report fire modal state
+  const [reportModalVisible, setReportModalVisible] = useState(false);
+  const [submittingReport, setSubmittingReport] = useState(false);
+  const [selfReportsData, setSelfReportsData] = useState<GeoJSON.FeatureCollection | null>(null);
 
   // Request location permission — actual coords come from UserLocation onUpdate
   useEffect(() => {
@@ -156,6 +168,12 @@ export default function MapLibre() {
       });
   }, [mapReady]);
 
+  // Load self reports once map is ready
+  useEffect(() => {
+    if (!mapReady) return;
+    loadSelfReports();
+  }, [mapReady]);
+
   const getFeatureCenter = (feature: GeoJSON.Feature): [number, number] | null => {
     const geom = feature.geometry;
     if (!geom) return null;
@@ -219,6 +237,65 @@ export default function MapLibre() {
         animationMode: 'flyTo',
         animationDuration: 600,
       });
+    }
+  };
+
+  const handleOpenReport = () => {
+    if (!userCoords) {
+      Alert.alert(
+        'Location unavailable',
+        'We need your current location before you can submit a fire report.'
+      );
+      return;
+    }
+
+    setSelectedFire(null);
+    setSelectedStation(null);
+    setReportModalVisible(true);
+  };
+
+  const handleConfirmReport = async () => {
+    if (!userCoords) {
+      Alert.alert(
+        'Location unavailable',
+        'We could not get your current location.'
+      );
+      return;
+    }
+
+    try {
+      setSubmittingReport(true);
+
+      const [longitude, latitude] = userCoords;
+
+      await submitSelfReport({
+        latitude,
+        longitude,
+        description: 'User-reported fire',
+      });
+
+      await loadSelfReports();
+
+      setReportModalVisible(false);
+
+      Alert.alert(
+        'Report submitted',
+        'Your fire report was submitted using your current location.'
+      );
+
+    } catch (error) {
+      console.error('Failed to submit self report:', error);
+      Alert.alert('Error', 'Failed to submit fire report.');
+    } finally {
+      setSubmittingReport(false);
+    }
+  };
+  const loadSelfReports = async () => {
+    try {
+      const data = await fetchSelfReports();
+      setSelfReportsData(data);
+    } catch (err) {
+      console.error('Failed to fetch self reports:', err);
     }
   };
 
@@ -324,7 +401,27 @@ export default function MapLibre() {
             />
           </ShapeSource>
         )}
+        {/* Self Reports Layer */}
+        {selfReportsData && (
+          <ShapeSource
+            id="self-reports-data"
+            shape={selfReportsData}
+            onPress={(e) => handleFirePress(e.features[0])}
+          >
+            <CircleLayer
+              id="self-reports-layer"
+              style={{
+                circleColor: '#F59E0B',
+                circleRadius: 6,
+                circleOpacity: 0.95,
+                circleStrokeWidth: 2,
+                circleStrokeColor: '#FFFFFF',
+              }}
+            />
+          </ShapeSource>
+        )}
       </MapView>
+      
 
       {/* Loading overlay */}
       {!mapReady && (
@@ -453,9 +550,10 @@ export default function MapLibre() {
             style={styles.roundMapButton}
             activeOpacity={0.85}
             accessibilityRole="button"
-            accessibilityLabel="Report"
+            accessibilityLabel="Report fire"
+            onPress={handleOpenReport}
           >
-            <Ionicons name="flag-outline" size={20} color="#fff" />
+            <Ionicons name="warning-outline" size={20} color="#fff" />
           </TouchableOpacity>
 
           <TouchableOpacity
@@ -480,15 +578,23 @@ export default function MapLibre() {
             </TouchableOpacity>
 
             <Text style={styles.popupTitle}>
-              {selectedFire.properties?.prescribed_date_start
-                ? 'Prescribed Fire'
-                : selectedFire.geometry?.type === 'Polygon' || selectedFire.geometry?.type === 'MultiPolygon'
-                  ? 'Fire Perimeter'
-                  : 'Satellite Hotspot'}
+              {selectedFire.properties?.source === 'user'
+                ? 'User Fire Report'
+                : selectedFire.properties?.prescribed_date_start
+                  ? 'Prescribed Fire'
+                  : selectedFire.geometry?.type === 'Polygon' || selectedFire.geometry?.type === 'MultiPolygon'
+                    ? 'Fire Perimeter'
+                    : 'Satellite Hotspot'}
             </Text>
 
             <View style={styles.popupDivider} />
-
+            
+            {selectedFire.properties?.source === 'user' && (
+              <Text style={styles.popupDetail}>
+                ⚠️ Community report: {selectedFire.properties.description || 'User-reported fire'}
+              </Text>
+            )}
+            
             {/* Satellite Hotspot Pop Up */}
             {selectedFire.properties?.satellite && (
               <Text style={styles.popupDetail}>
@@ -618,7 +724,51 @@ export default function MapLibre() {
             )}
           </View>
         )}
+        <Modal
+          visible={reportModalVisible}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setReportModalVisible(false)}
+        >
+          <View style={styles.modalOverlay}>
+            <View style={styles.reportModal}>
+              <Text style={styles.reportModalTitle}>Report Fire</Text>
+              <Text style={styles.reportModalText}>
+                Submit a fire report using your current location?
+              </Text>
 
+              {userCoords && (
+                <Text style={styles.reportModalCoords}>
+                  Lat: {userCoords[1].toFixed(5)} | Lng: {userCoords[0].toFixed(5)}
+                </Text>
+              )}
+
+              <View style={styles.reportModalActions}>
+                <TouchableOpacity
+                  style={styles.reportCancelButton}
+                  onPress={() => setReportModalVisible(false)}
+                  activeOpacity={0.85}
+                  disabled={submittingReport}
+                >
+                  <Text style={styles.reportCancelText}>Cancel</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.reportConfirmButton}
+                  onPress={handleConfirmReport}
+                  activeOpacity={0.85}
+                  disabled={submittingReport}
+                >
+                  {submittingReport ? (
+                    <ActivityIndicator size="small" color="#fff" />
+                  ) : (
+                    <Text style={styles.reportConfirmText}>Confirm</Text>
+                  )}
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
+        </Modal>
       </SafeAreaView>
     </View>
   );
@@ -830,5 +980,68 @@ const styles = StyleSheet.create({
   },
   popupLink: {
     color: '#2563EB',
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.35)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 20,
+  },
+  reportModal: {
+    width: '100%',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 18,
+    shadowColor: '#000',
+    shadowOpacity: 0.18,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 8,
+  },
+  reportModalTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#111827',
+    marginBottom: 8,
+  },
+  reportModalText: {
+    fontSize: 14,
+    color: '#4B5563',
+    marginBottom: 10,
+  },
+  reportModalCoords: {
+    fontSize: 12,
+    color: '#6B7280',
+    marginBottom: 16,
+  },
+  reportModalActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: 10,
+  },
+  reportCancelButton: {
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderRadius: 10,
+    backgroundColor: '#F3F4F6',
+  },
+  reportCancelText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#374151',
+  },
+  reportConfirmButton: {
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderRadius: 10,
+    backgroundColor: '#F58500',
+    minWidth: 92,
+    alignItems: 'center',
+  },
+  reportConfirmText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#FFFFFF',
   },
 });
