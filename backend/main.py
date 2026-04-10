@@ -32,6 +32,8 @@ GEOAPIFY_DETAILS_URL = "https://api.geoapify.com/v2/place-details"
 GEOAPIFY_CATEGORIES = {
     "hotels": "accommodation.hotel,accommodation.motel,accommodation.guest_house",
     "grocery": "commercial.supermarket,commercial.food_and_drink",
+    "gas": "commercial.gas",
+    "convenience": "commercial.convenience",
 }
 
 # Snap coordinates to ~1km grid to allow Redis reuse across nearby users
@@ -671,7 +673,7 @@ async def get_cached_data():
 async def get_nearby_places(
     lat: float = Query(..., description="User latitude"),
     lon: float = Query(..., description="User longitude"),
-    type: str = Query(..., description="Resource type: hotels or grocery"),
+    type: str = Query(..., description="Resource type: hotels, grocery, gas, or convenience"),
     radius: int = Query(10000, description="Search radius in meters"),
     limit: int = Query(20, description="Max results (1-50)"),
 ):
@@ -693,6 +695,7 @@ async def get_nearby_places(
     snapped_lon = round(lon, COORD_PRECISION)
     cache_key = f"ashguard:places:{type}:{snapped_lat}:{snapped_lon}:{radius}"
 
+    # Check and call the cache first, to reduce multiple API calls to Geoapify
     try:
         cached = await redis_client.get(cache_key)
         if cached:
@@ -701,6 +704,7 @@ async def get_nearby_places(
     except Exception as e:
         logger.warning(f"[places/{type}] Redis read failed, proceeding to fetch: {e}")
 
+    # If there is no existing cache, API call to Geoapify
     try:
         result = await fetch_nearby_places(lat, lon, type, radius_meters=radius, limit=limit)
     except Exception as e:
@@ -710,6 +714,7 @@ async def get_nearby_places(
             content={"detail": "Failed to fetch places from upstream provider"},
         )
 
+    # Write to Redis 
     try:
         await redis_client.setex(cache_key, 3600, json.dumps(result))
     except Exception as e:

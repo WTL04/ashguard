@@ -1,4 +1,4 @@
-import React, { useRef, useState, useEffect } from 'react';
+import React, { useRef, useState, useEffect, useMemo } from 'react';
 import {
   View,
   Text,
@@ -14,44 +14,110 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as Location from 'expo-location';
-import * as MapLibreRN from "@maplibre/maplibre-react-native";
-import { Camera, UserLocation, type CameraRef, ShapeSource, FillLayer, LineLayer, SymbolLayer, CircleLayer } from "@maplibre/maplibre-react-native";
+import * as MapLibreRN from '@maplibre/maplibre-react-native';
+import {
+  Camera,
+  UserLocation,
+  type CameraRef,
+  ShapeSource,
+  FillLayer,
+  CircleLayer,
+} from '@maplibre/maplibre-react-native';
+
 const { MapView } = MapLibreRN;
+
 import { Colors } from '@/constants/colors';
 import {
   fetchFireData,
   fetchWeatherData,
   submitSelfReport,
   fetchSelfReports,
-} from "../../services/mapApi";
+  fetchNearbyResources,
+} from '../../services/mapApi';
+
+import ResourceBottomSheet from './resourcesSlider';
 
 // ── Filter chip config ───────────────────────────────────────────────────────
 const FILTERS = [
-  { id: 'all',             label: 'All',              icon: 'apps-outline' },
-  { id: 'hospitals',       label: 'Hospitals',        icon: 'medical-outline' },
-  { id: 'perimeters',      label: 'Fire Perimeters',  icon: 'flame-outline' },
-  { id: 'hotspots',        label: 'Satellite Hotspots', icon: 'radio-outline' },
-  { id: 'prescribed',      label: 'Prescribed Fires', icon: 'leaf-outline' },
-  { id: 'weather',         label: 'Weather Stations', icon: 'partly-sunny-outline' },
-  { id: 'shelters',        label: 'Shelters',         icon: 'home-outline' },
-  { id: 'food',            label: 'Food Banks',       icon: 'fast-food-outline' },
+  { id: 'all', label: 'All', icon: 'apps-outline' },
+  { id: 'hospitals', label: 'Hospitals', icon: 'medical-outline' },
+  { id: 'perimeters', label: 'Fire Perimeters', icon: 'flame-outline' },
+  { id: 'hotspots', label: 'Satellite Hotspots', icon: 'radio-outline' },
+  { id: 'prescribed', label: 'Prescribed Fires', icon: 'leaf-outline' },
+  { id: 'weather', label: 'Weather Stations', icon: 'partly-sunny-outline' },
+  { id: 'shelters', label: 'Shelters', icon: 'home-outline' },
+  { id: 'resources', label: 'Resources', icon: 'fast-food-outline' },
 ] as const;
 
 type FilterId = typeof FILTERS[number]['id'];
 
-// California center
+type ResourceType = 'hotels' | 'grocery' | 'gas' | 'convenience';
+
+type NearbyPlace = {
+  id: string;
+  name: string;
+  latitude: number;
+  longitude: number;
+  address?: string;
+  type: ResourceType;
+  distanceMeters?: number;
+  rating?: number;
+  isOpen?: boolean;
+};
+
 const CA_CENTER: [number, number] = [-119.4179, 36.7783];
 const CA_ZOOM = 6;
 
 const CONFIDENCE_MAP: Record<string, string> = {
-  "H": 'High',
-  "M": 'Medium',
-  "L": 'Low',
+  H: 'High',
+  M: 'Medium',
+  L: 'Low',
 };
 
-// Unit conversion helpers
-const celsiusToFahrenheit = (c: number): string => `${((c * 9) / 5 + 32).toFixed(1)} °F`;
-const kmhToMph = (kmh: number): string => `${(kmh * 0.621371).toFixed(1)} mph`;
+const celsiusToFahrenheit = (c: number): string =>
+  `${((c * 9) / 5 + 32).toFixed(1)} °F`;
+
+const kmhToMph = (kmh: number): string =>
+  `${(kmh * 0.621371).toFixed(1)} mph`;
+
+const getFeatureProp = <T,>(
+  feature: GeoJSON.Feature,
+  key: string,
+  fallback?: T
+): T | undefined => {
+  return (feature.properties?.[key] as T | undefined) ?? fallback;
+};
+
+const extractPlacesFromGeoJSON = (
+  data: GeoJSON.FeatureCollection
+): NearbyPlace[] => {
+  return (data.features ?? [])
+    .filter((f): f is GeoJSON.Feature<GeoJSON.Point> => f.geometry?.type === 'Point')
+    .map((f, index) => {
+      const coords = f.geometry.coordinates as [number, number];
+
+      return {
+        id: String(
+          getFeatureProp<string | number>(f, 'id') ??
+          getFeatureProp<string | number>(f, 'place_id') ??
+          index
+        ),
+        name: getFeatureProp<string>(f, 'name', 'Unnamed place') ?? 'Unnamed place',
+        latitude: coords[1],
+        longitude: coords[0],
+        address:
+          getFeatureProp<string>(f, 'address') ??
+          getFeatureProp<string>(f, 'address_line2'),
+        type:
+          (getFeatureProp<string>(f, 'resource_type') as ResourceType) ?? 'grocery',
+        distanceMeters:
+          getFeatureProp<number>(f, 'distanceMeters') ??
+          getFeatureProp<number>(f, 'distance'),
+        rating: getFeatureProp<number>(f, 'rating'),
+        isOpen: getFeatureProp<boolean>(f, 'isOpen'),
+      };
+    });
+};
 
 export default function MapLibre() {
   const cameraRef = useRef<CameraRef>(null);
@@ -63,13 +129,13 @@ export default function MapLibre() {
   const [mapReady, setMapReady] = useState(false);
   const [search, setSearch] = useState('');
 
-  // Separate state for each fire data type
+  // Fire state
   const [hotspotsData, setHotspotsData] = useState<GeoJSON.FeatureCollection | null>(null);
   const [perimetersData, setPerimetersData] = useState<GeoJSON.FeatureCollection | null>(null);
   const [prescribedData, setPrescribedData] = useState<GeoJSON.FeatureCollection | null>(null);
   const [firesLoading, setFiresLoading] = useState(false);
   const [firesError, setFiresError] = useState<string | null>(null);
-  const [selectedFire, setSelectedFire] = useState<GeoJSON.Feature | null>(null);
+  const [selectedData, setSelectedData] = useState<GeoJSON.Feature | null>(null);
 
   // Weather state
   const [weatherData, setWeatherData] = useState<GeoJSON.FeatureCollection | null>(null);
@@ -77,12 +143,20 @@ export default function MapLibre() {
   const [weatherError, setWeatherError] = useState<string | null>(null);
   const [selectedStation, setSelectedStation] = useState<GeoJSON.Feature | null>(null);
 
+  // Resource state
+  const [resourcesData, setResourcesData] = useState<GeoJSON.FeatureCollection | null>(null);
+  const [resourcesLoading, setResourcesLoading] = useState(false);
+  const [resourcesError, setResourcesError] = useState<string | null>(null);
+  const [nearbyPlaces, setNearbyPlaces] = useState<NearbyPlace[]>([]);
+  const [selectedPlaceId, setSelectedPlaceId] = useState<string | null>(null);
+  const [resourceType, setResourceType] = useState<ResourceType>('grocery');
+  const [sheetOpen, setSheetOpen] = useState(false);
+
   // Report fire modal state
   const [reportModalVisible, setReportModalVisible] = useState(false);
   const [submittingReport, setSubmittingReport] = useState(false);
   const [selfReportsData, setSelfReportsData] = useState<GeoJSON.FeatureCollection | null>(null);
 
-  // Request location permission — actual coords come from UserLocation onUpdate
   useEffect(() => {
     (async () => {
       try {
@@ -94,9 +168,9 @@ export default function MapLibre() {
     })();
   }, []);
 
-  // Once map is ready AND we have live coords (from onUpdate), fly there once
   useEffect(() => {
     if (!mapReady || !userCoords || hasCenteredOnUserRef.current || !cameraRef.current) return;
+
     hasCenteredOnUserRef.current = true;
     cameraRef.current.setCamera({
       centerCoordinate: userCoords,
@@ -105,35 +179,35 @@ export default function MapLibre() {
     });
   }, [mapReady, userCoords]);
 
-  // Fetch and separate fire data into individual collections
   useEffect(() => {
     if (!mapReady) return;
+
     setFiresLoading(true);
     setFiresError(null);
+
     fetchFireData()
       .then((data) => {
-        // Satellite hotspots (points without prescribed_date_start)
         const hotspotFeatures = (data.satellite_hotspots?.features ?? []).filter(
           (f: GeoJSON.Feature) => !f.properties?.prescribed_date_start
         );
+
         setHotspotsData({
           type: 'FeatureCollection',
           features: hotspotFeatures,
         });
 
-        // Fire perimeters (polygons)
         setPerimetersData({
           type: 'FeatureCollection',
           features: data.fire_perimeters?.features ?? [],
         });
 
-        // Prescribed fires (points with prescribed_date_start)
         const prescribedFeatures = [
           ...(data.prescribed_fires?.features ?? []),
           ...(data.satellite_hotspots?.features ?? []).filter(
             (f: GeoJSON.Feature) => f.properties?.prescribed_date_start
           ),
         ];
+
         setPrescribedData({
           type: 'FeatureCollection',
           features: prescribedFeatures,
@@ -148,11 +222,12 @@ export default function MapLibre() {
       });
   }, [mapReady]);
 
-  // Fetch weather station data
   useEffect(() => {
     if (!mapReady) return;
+
     setWeatherLoading(true);
     setWeatherError(null);
+
     fetchWeatherData()
       .then((data) => {
         setWeatherData({
@@ -168,7 +243,36 @@ export default function MapLibre() {
       });
   }, [mapReady]);
 
-  // Load self reports once map is ready
+  useEffect(() => {
+    if (!userCoords) return;
+
+    const loadResources = async () => {
+      try {
+        setResourcesLoading(true);
+        setResourcesError(null);
+
+        const [longitude, latitude] = userCoords;
+
+        const data = await fetchNearbyResources({
+          latitude,
+          longitude,
+          type: resourceType,
+        });
+
+        setResourcesData(data);
+        setNearbyPlaces(extractPlacesFromGeoJSON(data));
+        setSheetOpen(true);
+      } catch (err) {
+        console.error('Failed to fetch nearby resources:', err);
+        setResourcesError('Failed to load nearby resources');
+      } finally {
+        setResourcesLoading(false);
+      }
+    };
+
+    loadResources();
+  }, [userCoords, resourceType]);
+
   useEffect(() => {
     if (!mapReady) return;
     loadSelfReports();
@@ -183,14 +287,15 @@ export default function MapLibre() {
     }
 
     if (geom.type === 'Polygon' || geom.type === 'MultiPolygon') {
-      const coords = geom.type === 'Polygon'
-        ? geom.coordinates[0]
-        : geom.coordinates[0][0];
-      let sumLng = 0, sumLat = 0;
+      const coords = geom.type === 'Polygon' ? geom.coordinates[0] : geom.coordinates[0][0];
+      let sumLng = 0;
+      let sumLat = 0;
+
       for (const coord of coords) {
         sumLng += coord[0];
         sumLat += coord[1];
       }
+
       return [sumLng / coords.length, sumLat / coords.length];
     }
 
@@ -198,8 +303,11 @@ export default function MapLibre() {
   };
 
   const handleFirePress = (feature: GeoJSON.Feature) => {
-    setSelectedStation(null); // close weather popup if open
-    setSelectedFire(feature);
+    setSelectedStation(null);
+    setSelectedPlaceId(null);
+    setSelectedData(feature);
+    setSheetOpen(false);
+
     const center = getFeatureCenter(feature);
     if (center && cameraRef.current) {
       cameraRef.current.flyTo(center, 500);
@@ -207,12 +315,39 @@ export default function MapLibre() {
   };
 
   const handleStationPress = (feature: GeoJSON.Feature) => {
-    setSelectedFire(null); // close fire popup if open
+    setSelectedData(null);
+    setSelectedPlaceId(null);
     setSelectedStation(feature);
+    setSheetOpen(false);
+
     const center = getFeatureCenter(feature);
     if (center && cameraRef.current) {
       cameraRef.current.flyTo(center, 500);
     }
+  };
+
+  const handleResourcePress = (feature: GeoJSON.Feature) => {
+    const center = getFeatureCenter(feature);
+    const id = String(
+      feature.properties?.id ?? feature.properties?.place_id ?? ''
+    );
+
+    setSelectedData(null);
+    setSelectedStation(null);
+    setSelectedPlaceId(id);
+    setSheetOpen(true);
+
+    if (center && cameraRef.current) {
+      cameraRef.current.flyTo(center, 500);
+    }
+  };
+
+  const handleSelectPlaceFromSheet = (place: NearbyPlace) => {
+    setSelectedData(null);
+    setSelectedStation(null);
+    setSelectedPlaceId(place.id);
+
+    cameraRef.current?.flyTo([place.longitude, place.latitude], 500);
   };
 
   const handleUserLocationUpdate = (location: any) => {
@@ -223,6 +358,7 @@ export default function MapLibre() {
 
   const handleLocateMe = () => {
     if (!cameraRef.current) return;
+
     if (userCoords) {
       cameraRef.current.setCamera({
         centerCoordinate: userCoords,
@@ -249,17 +385,15 @@ export default function MapLibre() {
       return;
     }
 
-    setSelectedFire(null);
+    setSelectedData(null);
     setSelectedStation(null);
+    setSelectedPlaceId(null);
     setReportModalVisible(true);
   };
 
   const handleConfirmReport = async () => {
     if (!userCoords) {
-      Alert.alert(
-        'Location unavailable',
-        'We could not get your current location.'
-      );
+      Alert.alert('Location unavailable', 'We could not get your current location.');
       return;
     }
 
@@ -282,7 +416,6 @@ export default function MapLibre() {
         'Report submitted',
         'Your fire report was submitted using your current location.'
       );
-
     } catch (error) {
       console.error('Failed to submit self report:', error);
       Alert.alert('Error', 'Failed to submit fire report.');
@@ -290,6 +423,7 @@ export default function MapLibre() {
       setSubmittingReport(false);
     }
   };
+
   const loadSelfReports = async () => {
     try {
       const data = await fetchSelfReports();
@@ -299,21 +433,22 @@ export default function MapLibre() {
     }
   };
 
-  // Counts for each data type
   const hotspotsCount = hotspotsData?.features.length ?? 0;
   const perimetersCount = perimetersData?.features.length ?? 0;
   const prescribedCount = prescribedData?.features.length ?? 0;
   const weatherCount = weatherData?.features.length ?? 0;
+  const resourcesCount = nearbyPlaces.length;
 
-  const map_light_mode = "https://basemaps.cartocdn.com/gl/voyager-gl-style/style.json"
-  const map_dark_mode = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json"
+  const mapLightMode =
+    'https://basemaps.cartocdn.com/gl/voyager-gl-style/style.json';
+
+  const selectedResourceFeatureId = useMemo(() => selectedPlaceId ?? '', [selectedPlaceId]);
 
   return (
     <View style={styles.root}>
-      {/* ── Full-screen map ────────────────────────────────────────────── */}
       <MapView
         style={StyleSheet.absoluteFill}
-        mapStyle={map_light_mode}
+        mapStyle={mapLightMode}
         onDidFinishLoadingMap={() => setMapReady(true)}
         compassEnabled={false}
         attributionEnabled={false}
@@ -322,9 +457,11 @@ export default function MapLibre() {
           ref={cameraRef}
           defaultSettings={{ centerCoordinate: CA_CENTER, zoomLevel: CA_ZOOM }}
         />
-        {locationGranted && <UserLocation visible={locationGranted} onUpdate={handleUserLocationUpdate} />}
 
-        {/* Satellite Hotspots Layer - orange circles */}
+        {locationGranted && (
+          <UserLocation visible={locationGranted} onUpdate={handleUserLocationUpdate} />
+        )}
+
         {(activeFilter === 'all' || activeFilter === 'hotspots') && hotspotsData && (
           <ShapeSource
             id="hotspots-data"
@@ -344,7 +481,6 @@ export default function MapLibre() {
           </ShapeSource>
         )}
 
-        {/* Fire Perimeters Layer - red fill */}
         {(activeFilter === 'all' || activeFilter === 'perimeters') && perimetersData && (
           <ShapeSource
             id="perimeters-data"
@@ -362,7 +498,6 @@ export default function MapLibre() {
           </ShapeSource>
         )}
 
-        {/* Prescribed Fires Layer - green circles */}
         {(activeFilter === 'all' || activeFilter === 'prescribed') && prescribedData && (
           <ShapeSource
             id="prescribed-data"
@@ -382,7 +517,6 @@ export default function MapLibre() {
           </ShapeSource>
         )}
 
-        {/* Weather Stations Layer - blue circles */}
         {(activeFilter === 'all' || activeFilter === 'weather') && weatherData && (
           <ShapeSource
             id="weather-data"
@@ -401,7 +535,36 @@ export default function MapLibre() {
             />
           </ShapeSource>
         )}
-        {/* Self Reports Layer */}
+
+        {(activeFilter === 'all' || activeFilter === 'resources') && resourcesData && (
+          <ShapeSource
+            id="resources-data"
+            shape={resourcesData}
+            onPress={(e) => handleResourcePress(e.features[0])}
+          >
+            <CircleLayer
+              id="resources-layer"
+              style={{
+                circleColor: [
+                  'case',
+                  ['==', ['to-string', ['coalesce', ['get', 'id'], ['get', 'place_id'], '']], selectedResourceFeatureId],
+                  '#F58500',
+                  '#10B981',
+                ],
+                circleRadius: [
+                  'case',
+                  ['==', ['to-string', ['coalesce', ['get', 'id'], ['get', 'place_id'], '']], selectedResourceFeatureId],
+                  7,
+                  5,
+                ],
+                circleOpacity: 0.9,
+                circleStrokeWidth: 1.5,
+                circleStrokeColor: '#FFFFFF',
+              }}
+            />
+          </ShapeSource>
+        )}
+
         {selfReportsData && (
           <ShapeSource
             id="self-reports-data"
@@ -421,19 +584,14 @@ export default function MapLibre() {
           </ShapeSource>
         )}
       </MapView>
-      
 
-      {/* Loading overlay */}
       {!mapReady && (
         <View style={styles.loadingOverlay}>
           <ActivityIndicator size="large" color={Colors.primary} />
         </View>
       )}
 
-      {/* ── UI overlay ──────────────────────────────────────────────────── */}
       <SafeAreaView style={styles.uiLayer} edges={['top']} pointerEvents="box-none">
-
-        {/* Search bar */}
         <View style={styles.searchRow}>
           <View style={styles.searchBox}>
             <TextInput
@@ -448,7 +606,6 @@ export default function MapLibre() {
           </View>
         </View>
 
-        {/* Filter chips */}
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
@@ -459,6 +616,8 @@ export default function MapLibre() {
             const active = activeFilter === f.id;
             const isFireFilter = ['hotspots', 'perimeters', 'prescribed'].includes(f.id);
             const isWeatherFilter = f.id === 'weather';
+            const isResourceFilter = f.id === 'resources';
+
             let badgeCount = 0;
             let badgeStyle = styles.badge;
             let badgeTextStyle = styles.badgeText;
@@ -468,12 +627,10 @@ export default function MapLibre() {
               badgeCount = hotspotsCount;
               badgeStyle = styles.badgeHotspots;
               badgeTextStyle = styles.badgeHotspotsText;
-              badgeActiveStyle = styles.badgeActive;
             } else if (f.id === 'perimeters') {
               badgeCount = perimetersCount;
               badgeStyle = styles.badge;
               badgeTextStyle = styles.badgeText;
-              badgeActiveStyle = styles.badgeActive;
             } else if (f.id === 'prescribed') {
               badgeCount = prescribedCount;
               badgeStyle = styles.badgePrescribed;
@@ -483,14 +640,20 @@ export default function MapLibre() {
               badgeCount = weatherCount;
               badgeStyle = styles.badgeWeather;
               badgeTextStyle = styles.badgeWeatherText;
-              badgeActiveStyle = styles.badgeActive;
+            } else if (f.id === 'resources') {
+              badgeCount = resourcesCount;
+              badgeStyle = styles.badgeResource;
+              badgeTextStyle = styles.badgeResourceText;
             }
 
             return (
               <TouchableOpacity
                 key={f.id}
                 style={[styles.chip, active && styles.chipActive]}
-                onPress={() => setActiveFilter(f.id)}
+                onPress={() => {
+                  setActiveFilter(f.id);
+                  if (f.id === 'resources') setSheetOpen(true);
+                }}
                 activeOpacity={0.8}
               >
                 <Ionicons
@@ -502,6 +665,7 @@ export default function MapLibre() {
                 <Text style={[styles.chipText, active && styles.chipTextActive]}>
                   {f.label}
                 </Text>
+
                 {isFireFilter && !firesLoading && !firesError && badgeCount > 0 && (
                   <View style={[badgeStyle, active && badgeActiveStyle]}>
                     <Text style={[badgeTextStyle, active && styles.badgeTextActive]}>
@@ -509,6 +673,7 @@ export default function MapLibre() {
                     </Text>
                   </View>
                 )}
+
                 {isFireFilter && firesLoading && (
                   <ActivityIndicator
                     size="small"
@@ -516,6 +681,7 @@ export default function MapLibre() {
                     style={{ marginLeft: 4 }}
                   />
                 )}
+
                 {isWeatherFilter && !weatherLoading && !weatherError && badgeCount > 0 && (
                   <View style={[badgeStyle, active && badgeActiveStyle]}>
                     <Text style={[badgeTextStyle, active && styles.badgeTextActive]}>
@@ -523,7 +689,24 @@ export default function MapLibre() {
                     </Text>
                   </View>
                 )}
+
                 {isWeatherFilter && weatherLoading && (
+                  <ActivityIndicator
+                    size="small"
+                    color={active ? '#fff' : Colors.primary}
+                    style={{ marginLeft: 4 }}
+                  />
+                )}
+
+                {isResourceFilter && !resourcesLoading && !resourcesError && badgeCount > 0 && (
+                  <View style={[badgeStyle, active && badgeActiveStyle]}>
+                    <Text style={[badgeTextStyle, active && styles.badgeTextActive]}>
+                      {badgeCount}
+                    </Text>
+                  </View>
+                )}
+
+                {isResourceFilter && resourcesLoading && (
                   <ActivityIndicator
                     size="small"
                     color={active ? '#fff' : Colors.primary}
@@ -535,7 +718,6 @@ export default function MapLibre() {
           })}
         </ScrollView>
 
-        {/* Floating action buttons */}
         <View style={styles.fab} pointerEvents="box-none">
           <TouchableOpacity
             style={styles.roundMapButton}
@@ -567,118 +749,119 @@ export default function MapLibre() {
           </TouchableOpacity>
         </View>
 
-        {/* ── Fire detail popup ──────────────────────────────────────────── */}
-        {selectedFire && (
+        {selectedData && (
           <View style={styles.popup} pointerEvents="box-none">
             <TouchableOpacity
               style={[styles.popupClose, { padding: 8, marginRight: -8, marginTop: -8 }]}
-              onPress={() => setSelectedFire(null)}
+              onPress={() => setSelectedData(null)}
             >
               <Ionicons name="close" size={24} color="#374151" />
             </TouchableOpacity>
 
             <Text style={styles.popupTitle}>
-              {selectedFire.properties?.source === 'user'
+              {selectedData.properties?.source === 'user'
                 ? 'User Fire Report'
-                : selectedFire.properties?.prescribed_date_start
-                  ? 'Prescribed Fire'
-                  : selectedFire.geometry?.type === 'Polygon' || selectedFire.geometry?.type === 'MultiPolygon'
-                    ? 'Fire Perimeter'
-                    : 'Satellite Hotspot'}
+                : selectedData.properties?.prescribed_date_start
+                ? 'Prescribed Fire'
+                : selectedData.geometry?.type === 'Polygon' ||
+                  selectedData.geometry?.type === 'MultiPolygon'
+                ? 'Fire Perimeter'
+                : 'Satellite Hotspot'}
             </Text>
 
             <View style={styles.popupDivider} />
-            
-            {selectedFire.properties?.source === 'user' && (
+
+            {selectedData.properties?.source === 'user' && (
               <Text style={styles.popupDetail}>
-                ⚠️ Community report: {selectedFire.properties.description || 'User-reported fire'}
-              </Text>
-            )}
-            
-            {/* Satellite Hotspot Pop Up */}
-            {selectedFire.properties?.satellite && (
-              <Text style={styles.popupDetail}>
-                🛰️ Source: {selectedFire.properties.satellite}
-              </Text>
-            )}
-            {selectedFire.properties?.confidence && (
-              <Text style={styles.popupDetail}>
-                🎯 Confidence: {CONFIDENCE_MAP[selectedFire.properties.confidence] ?? selectedFire.properties.confidence}
-              </Text>
-            )}
-            {selectedFire.properties?.acq_date && (
-              <Text style={styles.popupDetail}>
-                📅 Acquired: {selectedFire.properties.acq_date}
+                ⚠️ Community report: {selectedData.properties.description || 'User-reported fire'}
               </Text>
             )}
 
-            {/* Prescribed Fires Pop Up */}
-            {selectedFire.properties?.name && (
-              <Text style={styles.popupDetail}>
-                🌿 Name: {selectedFire.properties.name}
-              </Text>
+            {selectedData.properties?.satellite && (
+              <Text style={styles.popupDetail}>🛰️ Source: {selectedData.properties.satellite}</Text>
             )}
-            {selectedFire.properties?.prescribed_date_start && (
+
+            {selectedData.properties?.confidence && (
               <Text style={styles.popupDetail}>
-                🗓️ Start Date: {selectedFire.properties.prescribed_date_start}
+                🎯 Confidence:{' '}
+                {CONFIDENCE_MAP[selectedData.properties.confidence] ??
+                  selectedData.properties.confidence}
               </Text>
             )}
 
-            {/* Fire Perimeter Pop Up */}
-            {selectedFire.properties?.incident_name && (
+            {selectedData.properties?.acq_date && (
+              <Text style={styles.popupDetail}>📅 Acquired: {selectedData.properties.acq_date}</Text>
+            )}
+
+            {selectedData.properties?.name && (
+              <Text style={styles.popupDetail}>🌿 Name: {selectedData.properties.name}</Text>
+            )}
+
+            {selectedData.properties?.prescribed_date_start && (
               <Text style={styles.popupDetail}>
-                🔥 Incident Name: {selectedFire.properties.incident_name}
+                🗓️ Start Date: {selectedData.properties.prescribed_date_start}
               </Text>
             )}
-            {selectedFire.properties?.incident_number && (
+
+            {selectedData.properties?.incident_name && (
               <Text style={styles.popupDetail}>
-                📋 Incident #: {selectedFire.properties.incident_number}
+                🔥 Incident Name: {selectedData.properties.incident_name}
               </Text>
             )}
-            {selectedFire.properties?.source && (
+
+            {selectedData.properties?.incident_number && (
               <Text style={styles.popupDetail}>
-                📡 Source: {selectedFire.properties.source}
+                📋 Incident #: {selectedData.properties.incident_number}
               </Text>
             )}
-            {selectedFire.properties?.mission && (
+
+            {selectedData.properties?.source && (
+              <Text style={styles.popupDetail}>📡 Source: {selectedData.properties.source}</Text>
+            )}
+
+            {selectedData.properties?.mission && (
+              <Text style={styles.popupDetail}>🎯 Mission: {selectedData.properties.mission}</Text>
+            )}
+
+            {selectedData.properties?.displayStatus && (
               <Text style={styles.popupDetail}>
-                🎯 Mission: {selectedFire.properties.mission}
+                📊 Status: {selectedData.properties.displayStatus}
               </Text>
             )}
-            {selectedFire.properties?.displayStatus && (
+
+            {selectedData.properties?.description && (
               <Text style={styles.popupDetail}>
-                📊 Status: {selectedFire.properties.displayStatus}
+                📝 Description: {selectedData.properties.description}
               </Text>
             )}
-            {selectedFire.properties?.description && (
+
+            {selectedData.properties?.area_acres && (
               <Text style={styles.popupDetail}>
-                📝 Description: {selectedFire.properties.description}
+                📐 Area: {selectedData.properties.area_acres.toFixed(3)} acres
               </Text>
             )}
-            {selectedFire.properties?.area_acres && (
+
+            {selectedData.properties?.FireDiscoveryDate && (
               <Text style={styles.popupDetail}>
-                📐 Area: {selectedFire.properties.area_acres.toFixed(3)} acres
+                🗓️ Discovered:{' '}
+                {new Date(selectedData.properties.FireDiscoveryDate).toLocaleDateString()}
               </Text>
             )}
-            {selectedFire.properties?.FireDiscoveryDate && (
+
+            {selectedData.properties?.CreationDate && (
               <Text style={styles.popupDetail}>
-                🗓️ Discovered: {new Date(selectedFire.properties.FireDiscoveryDate).toLocaleDateString()}
+                📅 Created: {new Date(selectedData.properties.CreationDate).toLocaleDateString()}
               </Text>
             )}
-            {selectedFire.properties?.CreationDate && (
+
+            {selectedData.properties?.EditDate && (
               <Text style={styles.popupDetail}>
-                📅 Created: {new Date(selectedFire.properties.CreationDate).toLocaleDateString()}
-              </Text>
-            )}
-            {selectedFire.properties?.EditDate && (
-              <Text style={styles.popupDetail}>
-                ✏️ Updated: {new Date(selectedFire.properties.EditDate).toLocaleDateString()}
+                ✏️ Updated: {new Date(selectedData.properties.EditDate).toLocaleDateString()}
               </Text>
             )}
           </View>
         )}
 
-        {/* ── Weather station popup ──────────────────────────────────────── */}
         {selectedStation && (
           <View style={styles.popup} pointerEvents="box-none">
             <TouchableOpacity
@@ -697,26 +880,31 @@ export default function MapLibre() {
             <Text style={styles.popupDetail}>
               📡 Station ID: {selectedStation.properties?.stationId}
             </Text>
+
             {selectedStation.properties?.temperature != null && (
               <Text style={styles.popupDetail}>
                 🌡️ Temperature: {celsiusToFahrenheit(selectedStation.properties.temperature)}
               </Text>
             )}
+
             {selectedStation.properties?.relativeHumidity != null && (
               <Text style={styles.popupDetail}>
                 💧 Humidity: {selectedStation.properties.relativeHumidity.toFixed(1)} %
               </Text>
             )}
+
             {selectedStation.properties?.dewpoint != null && (
               <Text style={styles.popupDetail}>
                 🌫️ Dew Point: {celsiusToFahrenheit(selectedStation.properties.dewpoint)}
               </Text>
             )}
+
             {selectedStation.properties?.windSpeed != null && (
               <Text style={styles.popupDetail}>
                 💨 Wind Speed: {kmhToMph(selectedStation.properties.windSpeed)}
               </Text>
             )}
+
             {selectedStation.properties?.timestamp && (
               <Text style={styles.popupDetail}>
                 🕐 Updated: {new Date(selectedStation.properties.timestamp).toLocaleString()}
@@ -724,6 +912,7 @@ export default function MapLibre() {
             )}
           </View>
         )}
+
         <Modal
           visible={reportModalVisible}
           transparent
@@ -770,6 +959,17 @@ export default function MapLibre() {
           </View>
         </Modal>
       </SafeAreaView>
+
+      <ResourceBottomSheet
+        visible={sheetOpen}
+        places={nearbyPlaces}
+        selectedPlaceId={selectedPlaceId}
+        resourceType={resourceType}
+        loading={resourcesLoading}
+        onChangeResourceType={setResourceType}
+        onSelectPlace={handleSelectPlaceFromSheet}
+        onClose={() => setSheetOpen(false)}
+      />
     </View>
   );
 }
@@ -792,7 +992,6 @@ const styles = StyleSheet.create({
     flex: 1,
   },
 
-  // Search
   searchRow: {
     paddingHorizontal: 12,
     paddingTop: 8,
@@ -806,7 +1005,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: Platform.OS === 'ios' ? 10 : 8,
     shadowColor: '#000',
-    shadowOpacity: 0.10,
+    shadowOpacity: 0.1,
     shadowRadius: 8,
     shadowOffset: { width: 0, height: 2 },
     elevation: 4,
@@ -818,7 +1017,6 @@ const styles = StyleSheet.create({
     padding: 0,
   },
 
-  // Filter chips
   filtersScroll: {
     flexGrow: 0,
   },
@@ -852,7 +1050,6 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
   },
 
-  // Badge (fire perimeters - red)
   badge: {
     backgroundColor: '#FEE2E2',
     borderRadius: 10,
@@ -872,7 +1069,6 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
   },
 
-  // Badge (satellite hotspots - orange)
   badgeHotspots: {
     backgroundColor: '#FFEDD5',
     borderRadius: 10,
@@ -886,7 +1082,6 @@ const styles = StyleSheet.create({
     color: '#EA580C',
   },
 
-  // Badge (prescribed fires - green)
   badgePrescribed: {
     backgroundColor: '#DCFCE7',
     borderRadius: 10,
@@ -900,10 +1095,9 @@ const styles = StyleSheet.create({
   badgePrescribedText: {
     fontSize: 10,
     fontWeight: '700',
-    color: '#16a34a',
+    color: '#16A34A',
   },
 
-  // Badge (weather stations - blue)
   badgeWeather: {
     backgroundColor: '#DBEAFE',
     borderRadius: 10,
@@ -911,16 +1105,25 @@ const styles = StyleSheet.create({
     paddingVertical: 1,
     marginLeft: 4,
   },
-  badgeWeatherActive: {
-    backgroundColor: 'rgba(255,255,255,0.25)',
-  },
   badgeWeatherText: {
     fontSize: 10,
     fontWeight: '700',
     color: '#2563EB',
   },
 
-  // Floating buttons
+  badgeResource: {
+    backgroundColor: '#D1FAE5',
+    borderRadius: 10,
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    marginLeft: 4,
+  },
+  badgeResourceText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#059669',
+  },
+
   fab: {
     position: 'absolute',
     right: 12,
@@ -941,7 +1144,6 @@ const styles = StyleSheet.create({
     elevation: 6,
   },
 
-  // Popup (shared by fire and weather)
   popup: {
     position: 'absolute',
     bottom: 32,
@@ -978,9 +1180,7 @@ const styles = StyleSheet.create({
     color: '#6B7280',
     marginTop: 4,
   },
-  popupLink: {
-    color: '#2563EB',
-  },
+
   modalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.35)',

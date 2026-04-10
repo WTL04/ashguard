@@ -40,3 +40,31 @@ export const fetchSelfReports = async () => {
   if (!res.ok) throw new Error(`HTTP error: ${res.status}`);
   return res.json();
 };
+
+export const fetchNearbyResources = async (payload: {
+  latitude: number;
+  longitude: number;
+  type: "hotels" | "grocery" | "gas" | "convenience";
+  radius?: number;
+  limit?: number;
+}) => {
+  const {
+    latitude,
+    longitude,
+    type,
+    radius = 10000,
+    limit = 20,
+  } = payload;
+
+  const params = new URLSearchParams({
+    lat: latitude.toString(),
+    lon: longitude.toString(),
+    type,
+    radius: radius.toString(),
+    limit: limit.toString(),
+  });
+
+  const res = await fetch(`${BASE_URL}/api/v1/places/nearby?${params}`);
+  if (!res.ok) throw new Error(`HTTP error: ${res.status}`);
+  return res.json();
+};
