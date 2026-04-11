@@ -500,6 +500,8 @@ export default function LocationMeetupScreen() {
                   <UserLocation
                     visible={true}
                     onUpdate={handleUserLocationUpdate}
+                    renderMode="native"
+                    androidRenderMode="normal"
                   />
                 )}
 

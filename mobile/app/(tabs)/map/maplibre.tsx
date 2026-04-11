@@ -154,6 +154,7 @@ export default function MapLibre() {
       }
     })();
   }, []);
+
   useEffect(() => {
     if (!locationGranted) return;
 
@@ -161,19 +162,26 @@ export default function MapLibre() {
 
     (async () => {
       try {
-        const location = await Location.getLastKnownPositionAsync();
-        if (location) {
-          setUserCoords([location.coords.longitude, location.coords.latitude]);
-          return;
-        }
-      } catch (_) {}
+        const lastKnown = await Location.getLastKnownPositionAsync();
 
-      try {
+        if (lastKnown) {
+          setUserCoords([lastKnown.coords.longitude, lastKnown.coords.latitude]);
+        } else {
+          const current = await Location.getCurrentPositionAsync({
+            accuracy: Location.Accuracy.High,
+          });
+
+          setUserCoords([current.coords.longitude, current.coords.latitude]);
+        }
+
         subscription = await Location.watchPositionAsync(
-          { accuracy: Location.Accuracy.Balanced, distanceInterval: 10 },
+          {
+            accuracy: Location.Accuracy.High,
+            timeInterval: 2000,
+            distanceInterval: 1,
+          },
           (location) => {
             setUserCoords([location.coords.longitude, location.coords.latitude]);
-            subscription?.remove();
           }
         );
       } catch (err) {
@@ -377,17 +385,30 @@ export default function MapLibre() {
     setUserCoords([coords.longitude, coords.latitude]);
   };
 
-  const handleLocateMe = () => {
+  const handleLocateMe = async () => {
     if (!cameraRef.current) return;
 
-    if (userCoords) {
+    try {
+      const current = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.High,
+      });
+
+      const coords: [number, number] = [
+        current.coords.longitude,
+        current.coords.latitude,
+      ];
+
+      setUserCoords(coords);
+
       cameraRef.current.setCamera({
-        centerCoordinate: userCoords,
+        centerCoordinate: coords,
         zoomLevel: 13,
         animationMode: 'flyTo',
         animationDuration: 600,
       });
-    } else {
+    } catch (err) {
+      console.warn('Locate me failed:', err);
+
       cameraRef.current.setCamera({
         centerCoordinate: CA_CENTER,
         zoomLevel: CA_ZOOM,
@@ -480,7 +501,12 @@ export default function MapLibre() {
         />
 
         {locationGranted && (
-          <UserLocation visible={locationGranted} onUpdate={handleUserLocationUpdate} />
+          <UserLocation
+            visible={locationGranted}
+            onUpdate={handleUserLocationUpdate}
+            renderMode="native"
+            androidRenderMode="normal"
+          />
         )}
 
         {(activeFilter === 'all' || activeFilter === 'hotspots') && hotspotsData && (
