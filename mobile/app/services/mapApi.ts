@@ -1,3 +1,5 @@
+import { ResourceType } from "../(tabs)/map/resourceTypes";
+
 const BASE_URL = 'http://54.193.8.1:8000';
 
 export const fetchFireData = async () => {
@@ -44,7 +46,7 @@ export const fetchSelfReports = async () => {
 export const fetchNearbyResources = async (payload: {
   latitude: number;
   longitude: number;
-  type: "hotels" | "grocery" | "gas" | "convenience";
+  type: ResourceType;
   radius?: number;
   limit?: number;
 }) => {
