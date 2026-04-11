@@ -90,13 +90,15 @@ return (
           </KeyboardAvoidingView>
         </Modal>
 
-        <Pressable style={styles.addRecommendations}
-          onPress={() => router.push('/checklist/recommendations')}>
-          <Ionicons name="bulb" size={32} color="white" />
+        <Pressable
+          style={styles.addRecommendations}
+          onPress={() => router.push('/checklist/recommendations')}
+        >
+          <Ionicons name="bulb" size={28} color="white" />
         </Pressable>
 
         <Pressable style={styles.addItemButton} onPress={() => setIsModalVisible(true)}>
-          <Ionicons name="add-circle" size={75} color={Colors.primary} />
+          <Ionicons name="add" size={32} color="white" />
         </Pressable>
       </View>
     </SafeAreaView>
@@ -254,9 +256,15 @@ const styles = StyleSheet.create({
 
  
   addItemButton: {
-    position: 'absolute', 
-    bottom: 25, 
-    right: 20 
+    position: 'absolute',
+    bottom: 25,
+    right: 20,
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    backgroundColor: Colors.primary,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
 
   addRecommendations: { 

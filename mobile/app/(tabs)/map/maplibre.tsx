@@ -168,7 +168,36 @@ export default function MapLibre() {
       }
     })();
   }, []);
+  useEffect(() => {
+    if (!locationGranted) return;
 
+    let subscription: Location.LocationSubscription | null = null;
+
+    (async () => {
+      try {
+        const location = await Location.getLastKnownPositionAsync();
+        if (location) {
+          setUserCoords([location.coords.longitude, location.coords.latitude]);
+          return;
+        }
+      } catch (_) {}
+
+      try {
+        subscription = await Location.watchPositionAsync(
+          { accuracy: Location.Accuracy.Balanced, distanceInterval: 10 },
+          (location) => {
+            setUserCoords([location.coords.longitude, location.coords.latitude]);
+            subscription?.remove();
+          }
+        );
+      } catch (err) {
+        console.warn('Could not get current position:', err);
+      }
+    })();
+
+    return () => subscription?.remove();
+  }, [locationGranted]);
+  
   useEffect(() => {
     if (!mapReady || !userCoords || hasCenteredOnUserRef.current || !cameraRef.current) return;
 

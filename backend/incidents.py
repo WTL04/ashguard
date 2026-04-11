@@ -6,13 +6,18 @@ and upserts them into Firestore as pinned official notices.
 
 Firestore collection: threads
 Document ID:          "calfire_<incident_id>" (stable, prevents duplicates)
+
+Cleanup rules (run after every sync):
+  1. Doc is no longer in the active CalFire feed  → delete
+  2. Containment reaches 100%                     → delete
+  3. updatedAt hasn't changed in STALE_DAYS days  → delete
 """
 
 import os
 import logging
 import asyncio
 import hashlib
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 import httpx
 from google.cloud import firestore
@@ -26,6 +31,7 @@ CALFIRE_API_URL = "https://incidents.fire.ca.gov/umbraco/api/IncidentApi/List?in
 SYNC_INTERVAL   = 900   # seconds — sync every 15 minutes
 AUTHOR_NAME     = "CAL FIRE"
 AVATAR_COLOR    = "#B45309"
+STALE_DAYS      = 3     # delete calfire docs not updated in this many days
 
 
 # ── Firestore client (lazy singleton) ─────────────────────────────────────────
@@ -177,12 +183,66 @@ async def _upsert_incident(db: firestore.AsyncClient, incident: dict) -> None:
             logger.debug(f"Firestore: no change for '{incident['title']}', skipping")
 
 
+# ── Cleanup ───────────────────────────────────────────────────────────────────
+
+async def _cleanup_resolved_incidents(
+    db: firestore.AsyncClient,
+    active_doc_ids: set[str],
+) -> None:
+    """
+    Deletes calfire_ pinned threads that meet any of these conditions:
+      1. No longer present in the active CalFire feed (incident closed/removed)
+      2. Fully contained — body contains 'Containment: 100%'
+      3. Not updated in STALE_DAYS days (updatedAt is a real datetime, not SERVER_TIMESTAMP)
+    """
+    now = datetime.now(timezone.utc)
+    stale_cutoff = now - timedelta(days=STALE_DAYS)
+
+    query = db.collection("threads").where("authorId", "==", "calfire_official")
+    deleted = 0
+
+    async for doc in query.stream():
+        doc_id = doc.id
+        data = doc.to_dict() or {}
+        title = data.get("title", doc_id)
+
+        # Rule 1: dropped from the active feed entirely
+        if doc_id not in active_doc_ids:
+            await doc.reference.delete()
+            logger.info(f"Firestore: deleted inactive incident '{title}' (not in feed)")
+            deleted += 1
+            continue
+
+        # Rule 2: fire is 100% contained
+        body = data.get("body", "")
+        if "Containment: 100%" in body:
+            await doc.reference.delete()
+            logger.info(f"Firestore: deleted fully-contained incident '{title}'")
+            deleted += 1
+            continue
+
+        # Rule 3: updatedAt is stale (only applies when value is a real datetime)
+        updated_at = data.get("updatedAt")
+        if isinstance(updated_at, datetime):
+            # Make timezone-aware if naive
+            if updated_at.tzinfo is None:
+                updated_at = updated_at.replace(tzinfo=timezone.utc)
+            if updated_at < stale_cutoff:
+                await doc.reference.delete()
+                logger.info(f"Firestore: deleted stale incident '{title}' (last updated {updated_at.date()})")
+                deleted += 1
+                continue
+
+    logger.info(f"Cleanup complete: removed {deleted} resolved/stale incident(s)")
+
+
 # ── Sync ──────────────────────────────────────────────────────────────────────
 
 async def sync_calfire_incidents() -> int:
     """
-    Fetches active CalFire incidents from the JSON API and upserts into Firestore.
-    Returns the number of incidents processed.
+    Fetches active CalFire incidents from the JSON API, upserts them into
+    Firestore, then removes any that are resolved, fully contained, or stale.
+    Returns the number of active incidents processed.
     """
     async with httpx.AsyncClient(timeout=20.0) as client:
         try:
@@ -208,7 +268,14 @@ async def sync_calfire_incidents() -> int:
         return 0
 
     db = get_db()
+
+    # Upsert all active incidents in parallel
     await asyncio.gather(*[_upsert_incident(db, inc) for inc in incidents])
+
+    # Clean up resolved, fully-contained, or stale incidents
+    active_ids = {inc["doc_id"] for inc in incidents}
+    await _cleanup_resolved_incidents(db, active_ids)
+
     return len(incidents)
 
 
