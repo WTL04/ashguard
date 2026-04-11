@@ -34,7 +34,7 @@ GEOAPIFY_CATEGORIES = {
     "grocery": "commercial.supermarket",
     "gas": "commercial.gas",
     "convenience": "commercial.convenience",
-    "hospital": "healthcare.hospital,healthcare.clinic,healthcare.emergency",
+    "hospital": "healthcare.hospital",
     "pharmacy": "healthcare.pharmacy",
 }
 
@@ -874,11 +874,23 @@ async def get_nearby_places(
         result = await fetch_nearby_places(
             lat, lon, type, radius_meters=radius, limit=limit
         )
-    except Exception as e:
-        logger.error(f"[places/{type}] Geoapify fetch failed: {e}")
+    except httpx.HTTPStatusError as e:
+        logger.error(
+            f"[places/{type}] Geoapify HTTP error: "
+            f"status={e.response.status_code}, body={e.response.text}"
+        )
         return JSONResponse(
             status_code=502,
-            content={"detail": "Failed to fetch places from upstream provider"},
+            content={
+                "detail": "Failed to fetch places from upstream provider",
+                "upstream_status": e.response.status_code,
+            },
+        )
+    except Exception as e:
+        logger.exception(f"[places/{type}] Geoapify fetch failed")
+        return JSONResponse(
+            status_code=502,
+            content={"detail": str(e)},
         )
 
     # Write to Redis
