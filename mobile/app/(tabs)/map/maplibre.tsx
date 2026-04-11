@@ -151,6 +151,7 @@ export default function MapLibre() {
   const [selectedPlaceId, setSelectedPlaceId] = useState<string | null>(null);
   const [resourceType, setResourceType] = useState<ResourceType>('grocery');
   const [sheetOpen, setSheetOpen] = useState(false);
+  const [distanceRadius, setDistanceRadius] = useState(10000); // default set to 10000 meters
 
   // Report fire modal state
   const [reportModalVisible, setReportModalVisible] = useState(false);
@@ -257,6 +258,7 @@ export default function MapLibre() {
           latitude,
           longitude,
           type: resourceType,
+          radius: distanceRadius,
         });
 
         setResourcesData(data);
@@ -271,7 +273,7 @@ export default function MapLibre() {
     };
 
     loadResources();
-  }, [userCoords, resourceType]);
+  }, [userCoords, resourceType, distanceRadius]);
 
   useEffect(() => {
     if (!mapReady) return;
@@ -952,21 +954,24 @@ export default function MapLibre() {
                     <ActivityIndicator size="small" color="#fff" />
                   ) : (
                     <Text style={styles.reportConfirmText}>Confirm</Text>
-                  )}
-                </TouchableOpacity>
+                  )} </TouchableOpacity>
               </View>
             </View>
           </View>
         </Modal>
       </SafeAreaView>
 
+
+      {/* Slider for resources */}
       <ResourceBottomSheet
         visible={sheetOpen}
         places={nearbyPlaces}
         selectedPlaceId={selectedPlaceId}
+        distanceRadius={distanceRadius}
         resourceType={resourceType}
         loading={resourcesLoading}
         onChangeResourceType={setResourceType}
+        onChangeDistanceRadius={setDistanceRadius}
         onSelectPlace={handleSelectPlaceFromSheet}
         onClose={() => setSheetOpen(false)}
       />

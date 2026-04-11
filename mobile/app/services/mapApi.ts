@@ -52,8 +52,8 @@ export const fetchNearbyResources = async (payload: {
     latitude,
     longitude,
     type,
-    radius = 10000,
-    limit = 20,
+    radius = 10000, // in meters
+    limit = 999999, // no limit - show all available
   } = payload;
 
   const params = new URLSearchParams({
