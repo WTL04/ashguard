@@ -7,7 +7,7 @@ and upserts them into Firestore as pinned official notices.
 Firestore collection: threads
 Document ID:          "calfire_<incident_id>" (stable, prevents duplicates)
 
-Cleanup rules (run after every sync):
+Cleanup rules (run after every sync, even if feed is empty):
   1. Doc is no longer in the active CalFire feed  → delete
   2. Containment reaches 100%                     → delete
   3. updatedAt hasn't changed in STALE_DAYS days  → delete
@@ -192,6 +192,7 @@ async def _cleanup_resolved_incidents(
     """
     Deletes calfire_ pinned threads that meet any of these conditions:
       1. No longer present in the active CalFire feed (incident closed/removed)
+         — if active_doc_ids is empty, ALL calfire_ docs are deleted
       2. Fully contained — body contains 'Containment: 100%'
       3. Not updated in STALE_DAYS days (updatedAt is a real datetime, not SERVER_TIMESTAMP)
     """
@@ -207,6 +208,7 @@ async def _cleanup_resolved_incidents(
         title = data.get("title", doc_id)
 
         # Rule 1: dropped from the active feed entirely
+        # (empty active_doc_ids means no active fires → delete everything)
         if doc_id not in active_doc_ids:
             await doc.reference.delete()
             logger.info(f"Firestore: deleted inactive incident '{title}' (not in feed)")
@@ -242,6 +244,10 @@ async def sync_calfire_incidents() -> int:
     """
     Fetches active CalFire incidents from the JSON API, upserts them into
     Firestore, then removes any that are resolved, fully contained, or stale.
+
+    Cleanup always runs — even if the feed is empty — so stale Firestore
+    docs are never left behind when there are no active fires.
+
     Returns the number of active incidents processed.
     """
     async with httpx.AsyncClient(timeout=20.0) as client:
@@ -262,17 +268,18 @@ async def sync_calfire_incidents() -> int:
         logger.warning("CalFire API: unexpected response format")
         return 0
 
-    incidents = _parse_calfire_json(data)
-    if not incidents:
-        logger.warning("CalFire API: no active incidents found")
-        return 0
-
     db = get_db()
 
-    # Upsert all active incidents in parallel
-    await asyncio.gather(*[_upsert_incident(db, inc) for inc in incidents])
+    # Parse — may return an empty list when there are no active fires
+    incidents = _parse_calfire_json(data)
 
-    # Clean up resolved, fully-contained, or stale incidents
+    # Upsert active incidents (skip if none)
+    if incidents:
+        await asyncio.gather(*[_upsert_incident(db, inc) for inc in incidents])
+    else:
+        logger.info("CalFire API: no active incidents — skipping upsert, running cleanup only")
+
+    # Always clean up — empty active_ids deletes all calfire_ docs in Firestore
     active_ids = {inc["doc_id"] for inc in incidents}
     await _cleanup_resolved_incidents(db, active_ids)
 
