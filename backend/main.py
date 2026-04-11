@@ -31,7 +31,7 @@ GEOAPIFY_DETAILS_URL = "https://api.geoapify.com/v2/place-details"
 
 GEOAPIFY_CATEGORIES = {
     "hotels": "accommodation.hotel,accommodation.motel,accommodation.guest_house",
-    "grocery": "commercial.supermarket,commercial.food_and_drink",
+    "grocery": "commercial.supermarket",
     "gas": "commercial.gas",
     "convenience": "commercial.convenience",
 }
@@ -44,33 +44,33 @@ COORD_PRECISION = 2  # ~1.1km resolution
 CACHE_CONFIGS = {
     "satellite_hotspots": {
         "key": "ashguard:satellite_hotspots",
-        "poll": 300,   # 5 mins
-        "ttl": 600,    # 10 mins
+        "poll": 300,  # 5 mins
+        "ttl": 600,  # 10 mins
     },
     "fire_perimeters": {
         "key": "ashguard:fire_perimeters",
-        "poll": 600,   # 10 mins
-        "ttl": 1200,   # 20 mins
+        "poll": 600,  # 10 mins
+        "ttl": 1200,  # 20 mins
     },
     "prescribed_fires": {
         "key": "ashguard:prescribed_fires",
         "poll": 3600,  # 60 mins
-        "ttl": 7200,   # 120 mins
+        "ttl": 7200,  # 120 mins
     },
     "shelters": {
         "key": "ashguard:shelters",
-        "poll": 600,   # 10 mins
-        "ttl": 1200,   # 20 mins
+        "poll": 600,  # 10 mins
+        "ttl": 1200,  # 20 mins
     },
     "weather_stations": {
         "key": "ashguard:weather_stations",
-        "poll": 300,   # 5 mins
-        "ttl": 600,    # 10 mins
+        "poll": 300,  # 5 mins
+        "ttl": 600,  # 10 mins
     },
     "hospitals": {
         "key": "ashguard:hospitals",
-        "poll": 86400,   # 1 day 
-        "ttl": 172800,   # 2 days
+        "poll": 86400,  # 1 day
+        "ttl": 172800,  # 2 days
     },
 }
 
@@ -95,6 +95,7 @@ class CacheStatusResponse(BaseModel):
     redis_used_memory: str | None = None
     redis_connected: bool
     error: str | None = None
+
 
 class SelfReportCreate(BaseModel):
     latitude: float
@@ -133,6 +134,7 @@ def dicts_to_geojson(data_list: list) -> dict:
 
     return {"type": "FeatureCollection", "features": features}
 
+
 def self_report_doc_to_feature(doc_id: str, data: dict) -> dict:
     return {
         "type": "Feature",
@@ -154,28 +156,177 @@ def self_report_doc_to_feature(doc_id: str, data: dict) -> dict:
         },
     }
 
+
 """
 --- Weather Data Helpers ---
 """
 
 CALIFORNIA_STATION_IDS = [
-    "KNGZ", "KAAT", "KAPV", "KACV", "KAUN", "KAVX", "KBFL", "KBAB", "KBUO", "KBYS",
-    "KL35", "KBIH", "KBLH", "KL08", "KO57", "KBAN", "KBUR", "KBNY", "KC83", "KCXL",
-    "KCMA", "KCZZ", "KNFG", "KCRQ", "KO59", "KCIC", "KNID", "KCNO", "KO22", "KCCR",
-    "KAJO", "KSNA", "KCEC", "KDAG", "KDWA", "KEDU", "KDLO", "KEDW", "K9L2", "KNJK",
-    "KEMT", "KBLU", "KEKA", "KL18", "KFOT", "KFCH", "KFAT", "KFUL", "KGOO", "KHAF",
-    "KHJO", "KO18", "KHHR", "KHWD", "KHES", "KHMT", "KCVH", "KHGT", "KNRS", "KIPL",
-    "KIYK", "KJAQ", "KWJF", "KPOC", "KWHP", "KNLC", "KLHM", "KLLR", "KLVK", "KLPC",
-    "KLGB", "KSLI", "KCQT", "KLAX", "KMAE", "KMMH", "KMYV", "KMHR", "KMCC", "KMER",
-    "KMCE", "KNKX", "KMOD", "KNUQ", "KMHV", "KSIY", "KMRY", "KMHS", "KMWS", "KF70",
-    "KAPC", "KEED", "K3A6", "KNZY", "KDVO", "KOAK", "KL52", "KOKB", "KNXF", "KONT",
-    "KOVE", "KOXR", "KGXA", "KPMD", "KPSP", "KPAO", "KPRB", "KO69", "KPVF", "KNTD",
-    "KPTV", "K87Q", "KRNM", "KRBL", "KRDD", "KREI", "KO32", "KO88", "KRAL", "KRIV",
-    "KSAC", "KSMF", "KSNS", "KCPU", "KSBD", "KSQL", "KNUC", "KSDB", "KSDM", "KSAN",
-    "KMYF", "KSEE", "KSFO", "KSJC", "KRHV", "KSBP", "KE16", "KNSI", "KSBA", "KSMX",
-    "KSMO", "KSTS", "KIZA", "KO87", "KTVL", "KSCK", "KSVE", "KTSP", "KTRM", "KTOA",
-    "KTCY", "KSUU", "KO86", "KTRK", "KNXP", "KUKI", "KCCB", "KVCB", "KVBG", "KXVW",
-    "KVNY", "KVCV", "KVIS", "KWVI", "KO54",
+    "KNGZ",
+    "KAAT",
+    "KAPV",
+    "KACV",
+    "KAUN",
+    "KAVX",
+    "KBFL",
+    "KBAB",
+    "KBUO",
+    "KBYS",
+    "KL35",
+    "KBIH",
+    "KBLH",
+    "KL08",
+    "KO57",
+    "KBAN",
+    "KBUR",
+    "KBNY",
+    "KC83",
+    "KCXL",
+    "KCMA",
+    "KCZZ",
+    "KNFG",
+    "KCRQ",
+    "KO59",
+    "KCIC",
+    "KNID",
+    "KCNO",
+    "KO22",
+    "KCCR",
+    "KAJO",
+    "KSNA",
+    "KCEC",
+    "KDAG",
+    "KDWA",
+    "KEDU",
+    "KDLO",
+    "KEDW",
+    "K9L2",
+    "KNJK",
+    "KEMT",
+    "KBLU",
+    "KEKA",
+    "KL18",
+    "KFOT",
+    "KFCH",
+    "KFAT",
+    "KFUL",
+    "KGOO",
+    "KHAF",
+    "KHJO",
+    "KO18",
+    "KHHR",
+    "KHWD",
+    "KHES",
+    "KHMT",
+    "KCVH",
+    "KHGT",
+    "KNRS",
+    "KIPL",
+    "KIYK",
+    "KJAQ",
+    "KWJF",
+    "KPOC",
+    "KWHP",
+    "KNLC",
+    "KLHM",
+    "KLLR",
+    "KLVK",
+    "KLPC",
+    "KLGB",
+    "KSLI",
+    "KCQT",
+    "KLAX",
+    "KMAE",
+    "KMMH",
+    "KMYV",
+    "KMHR",
+    "KMCC",
+    "KMER",
+    "KMCE",
+    "KNKX",
+    "KMOD",
+    "KNUQ",
+    "KMHV",
+    "KSIY",
+    "KMRY",
+    "KMHS",
+    "KMWS",
+    "KF70",
+    "KAPC",
+    "KEED",
+    "K3A6",
+    "KNZY",
+    "KDVO",
+    "KOAK",
+    "KL52",
+    "KOKB",
+    "KNXF",
+    "KONT",
+    "KOVE",
+    "KOXR",
+    "KGXA",
+    "KPMD",
+    "KPSP",
+    "KPAO",
+    "KPRB",
+    "KO69",
+    "KPVF",
+    "KNTD",
+    "KPTV",
+    "K87Q",
+    "KRNM",
+    "KRBL",
+    "KRDD",
+    "KREI",
+    "KO32",
+    "KO88",
+    "KRAL",
+    "KRIV",
+    "KSAC",
+    "KSMF",
+    "KSNS",
+    "KCPU",
+    "KSBD",
+    "KSQL",
+    "KNUC",
+    "KSDB",
+    "KSDM",
+    "KSAN",
+    "KMYF",
+    "KSEE",
+    "KSFO",
+    "KSJC",
+    "KRHV",
+    "KSBP",
+    "KE16",
+    "KNSI",
+    "KSBA",
+    "KSMX",
+    "KSMO",
+    "KSTS",
+    "KIZA",
+    "KO87",
+    "KTVL",
+    "KSCK",
+    "KSVE",
+    "KTSP",
+    "KTRM",
+    "KTOA",
+    "KTCY",
+    "KSUU",
+    "KO86",
+    "KTRK",
+    "KNXP",
+    "KUKI",
+    "KCCB",
+    "KVCB",
+    "KVBG",
+    "KXVW",
+    "KVNY",
+    "KVCV",
+    "KVIS",
+    "KWVI",
+    "KO54",
 ]
 
 NWS_HEADERS = {
@@ -209,9 +360,8 @@ async def fetch_single_station(
                     (
                         obs
                         for obs in data.get("features", [])
-                        if obs.get("properties", {})
-                        .get("temperature", {})
-                        .get("value") is not None
+                        if obs.get("properties", {}).get("temperature", {}).get("value")
+                        is not None
                     ),
                     None,
                 )
@@ -232,7 +382,9 @@ async def fetch_single_station(
                         "stationId": station_id,
                         "stationName": props.get("stationName", station_id),
                         "temperature": props.get("temperature", {}).get("value"),
-                        "relativeHumidity": props.get("relativeHumidity", {}).get("value"),
+                        "relativeHumidity": props.get("relativeHumidity", {}).get(
+                            "value"
+                        ),
                         "dewpoint": props.get("dewpoint", {}).get("value"),
                         "windSpeed": props.get("windSpeed", {}).get("value"),
                         "timestamp": props.get("timestamp"),
@@ -320,7 +472,9 @@ async def fetch_satellite_api(state: str | None = None) -> dict:
                 df_list.append(satellite_df[essential_cols])
                 logger.info(f"Successfully fetched data from {satellite}")
             else:
-                logger.warning(f"Failed to fetch from {satellite}: status {r.status_code}")
+                logger.warning(
+                    f"Failed to fetch from {satellite}: status {r.status_code}"
+                )
 
     if not df_list:
         return EMPTY_FEATURE_COLLECTION
@@ -471,7 +625,9 @@ async def fetch_nearby_places(
         raise ValueError("GEOAPIFY_API_KEY environment variable not set")
 
     categories = GEOAPIFY_CATEGORIES[resource_type]
-    logger.info(f"Fetching nearby {resource_type} at ({lat}, {lon}), radius={radius_meters}m")
+    logger.info(
+        f"Fetching nearby {resource_type} at ({lat}, {lon}), radius={radius_meters}m"
+    )
 
     params = {
         "categories": categories,
@@ -492,21 +648,23 @@ async def fetch_nearby_places(
         props = feature.get("properties", {})
         geometry = feature.get("geometry", {})
 
-        features.append({
-            "type": "Feature",
-            "geometry": geometry,
-            "properties": {
-                "name": props.get("name"),
-                "address": props.get("formatted"),
-                "address_line1": props.get("address_line1"),
-                "address_line2": props.get("address_line2"),
-                "lat": props.get("lat"),
-                "lon": props.get("lon"),
-                "categories": props.get("categories", []),
-                "place_id": props.get("place_id"),
-                "resource_type": resource_type,
-            },
-        })
+        features.append(
+            {
+                "type": "Feature",
+                "geometry": geometry,
+                "properties": {
+                    "name": props.get("name"),
+                    "address": props.get("formatted"),
+                    "address_line1": props.get("address_line1"),
+                    "address_line2": props.get("address_line2"),
+                    "lat": props.get("lat"),
+                    "lon": props.get("lon"),
+                    "categories": props.get("categories", []),
+                    "place_id": props.get("place_id"),
+                    "resource_type": resource_type,
+                },
+            }
+        )
 
     return {"type": "FeatureCollection", "features": features}
 
@@ -533,7 +691,8 @@ async def fetch_place_details(place_id: str) -> dict:
 
     details_feature = next(
         (
-            f for f in raw.get("features", [])
+            f
+            for f in raw.get("features", [])
             if f.get("properties", {}).get("feature_type") == "details"
         ),
         None,
@@ -618,8 +777,7 @@ async def lifespan(app: FastAPI):
         logger.error(f"Redis connection failed: {e}")
 
     dataset_tasks = [
-        asyncio.create_task(dataset_worker(name))
-        for name in CACHE_CONFIGS
+        asyncio.create_task(dataset_worker(name)) for name in CACHE_CONFIGS
     ]
     incidents_task = asyncio.create_task(incidents_sync_worker())
 
@@ -673,7 +831,9 @@ async def get_cached_data():
 async def get_nearby_places(
     lat: float = Query(..., description="User latitude"),
     lon: float = Query(..., description="User longitude"),
-    type: str = Query(..., description="Resource type: hotels, grocery, gas, or convenience"),
+    type: str = Query(
+        ..., description="Resource type: hotels, grocery, gas, or convenience"
+    ),
     radius: int = Query(10000, description="Search radius in meters"),
     limit: int = Query(20, description="Max results (1-50)"),
 ):
@@ -685,7 +845,9 @@ async def get_nearby_places(
     if type not in GEOAPIFY_CATEGORIES:
         return JSONResponse(
             status_code=400,
-            content={"detail": f"Invalid type '{type}'. Must be one of: {list(GEOAPIFY_CATEGORIES.keys())}"},
+            content={
+                "detail": f"Invalid type '{type}'. Must be one of: {list(GEOAPIFY_CATEGORIES.keys())}"
+            },
         )
 
     limit = max(1, min(limit, 50))
@@ -706,7 +868,9 @@ async def get_nearby_places(
 
     # If there is no existing cache, API call to Geoapify
     try:
-        result = await fetch_nearby_places(lat, lon, type, radius_meters=radius, limit=limit)
+        result = await fetch_nearby_places(
+            lat, lon, type, radius_meters=radius, limit=limit
+        )
     except Exception as e:
         logger.error(f"[places/{type}] Geoapify fetch failed: {e}")
         return JSONResponse(
@@ -714,7 +878,7 @@ async def get_nearby_places(
             content={"detail": "Failed to fetch places from upstream provider"},
         )
 
-    # Write to Redis 
+    # Write to Redis
     try:
         await redis_client.setex(cache_key, 3600, json.dumps(result))
     except Exception as e:
@@ -725,7 +889,9 @@ async def get_nearby_places(
 
 @app.get("/api/v1/places/details")
 async def get_place_details(
-    place_id: str = Query(..., description="Geoapify place_id from a nearby places response"),
+    place_id: str = Query(
+        ..., description="Geoapify place_id from a nearby places response"
+    ),
 ):
     """
     Returns opening hours, phone, and website for a single place.
@@ -745,7 +911,9 @@ async def get_place_details(
     try:
         result = await fetch_place_details(place_id)
     except Exception as e:
-        logger.error(f"[place_details] Geoapify fetch failed for place_id={place_id}: {e}")
+        logger.error(
+            f"[place_details] Geoapify fetch failed for place_id={place_id}: {e}"
+        )
         return JSONResponse(
             status_code=502,
             content={"detail": "Failed to fetch place details from upstream provider"},
@@ -822,6 +990,7 @@ async def manual_sync_incidents():
             content={"detail": f"Sync failed: {str(e)}"},
         )
 
+
 @app.post("/api/v1/self-reports")
 async def create_self_report(payload: SelfReportCreate):
     try:
@@ -857,7 +1026,8 @@ async def create_self_report(payload: SelfReportCreate):
             status_code=500,
             content={"detail": f"Failed to create self report: {str(e)}"},
         )
-    
+
+
 @app.get("/api/v1/self-reports")
 async def get_self_reports():
     try:
@@ -887,3 +1057,4 @@ async def get_self_reports():
             status_code=500,
             content={"detail": f"Failed to fetch self reports: {str(e)}"},
         )
+
