@@ -347,9 +347,13 @@ export default function MapLibre() {
   const handleSelectPlaceFromSheet = (place: NearbyPlace) => {
     setSelectedData(null);
     setSelectedStation(null);
-    setSelectedPlaceId(place.id);
-
-    cameraRef.current?.flyTo([place.longitude, place.latitude], 500);
+    
+    if (selectedPlaceId === place.id) {
+      setSelectedPlaceId(null);
+    } else {
+      setSelectedPlaceId(place.id);
+      cameraRef.current?.flyTo([place.longitude, place.latitude], 500);
+    }
   };
 
   const handleUserLocationUpdate = (location: any) => {
