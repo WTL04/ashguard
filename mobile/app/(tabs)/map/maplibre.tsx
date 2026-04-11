@@ -40,30 +40,16 @@ import ResourceBottomSheet from './resourcesSlider';
 // ── Filter chip config ───────────────────────────────────────────────────────
 const FILTERS = [
   { id: 'all', label: 'All', icon: 'apps-outline' },
-  { id: 'hospitals', label: 'Hospitals', icon: 'medical-outline' },
+  { id: 'resources', label: 'Resources', icon: 'fast-food-outline' },
   { id: 'perimeters', label: 'Fire Perimeters', icon: 'flame-outline' },
   { id: 'hotspots', label: 'Satellite Hotspots', icon: 'radio-outline' },
   { id: 'prescribed', label: 'Prescribed Fires', icon: 'leaf-outline' },
   { id: 'weather', label: 'Weather Stations', icon: 'partly-sunny-outline' },
-  { id: 'shelters', label: 'Shelters', icon: 'home-outline' },
-  { id: 'resources', label: 'Resources', icon: 'fast-food-outline' },
 ] as const;
 
 type FilterId = typeof FILTERS[number]['id'];
 
-type ResourceType = 'hotels' | 'grocery' | 'gas' | 'convenience';
-
-type NearbyPlace = {
-  id: string;
-  name: string;
-  latitude: number;
-  longitude: number;
-  address?: string;
-  type: ResourceType;
-  distanceMeters?: number;
-  rating?: number;
-  isOpen?: boolean;
-};
+import { ResourceType, NearbyPlace } from "./resourceTypes";
 
 const CA_CENTER: [number, number] = [-119.4179, 36.7783];
 const CA_ZOOM = 6;
@@ -197,7 +183,7 @@ export default function MapLibre() {
 
     return () => subscription?.remove();
   }, [locationGranted]);
-  
+
   useEffect(() => {
     if (!mapReady || !userCoords || hasCenteredOnUserRef.current || !cameraRef.current) return;
 

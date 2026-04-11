@@ -34,6 +34,8 @@ GEOAPIFY_CATEGORIES = {
     "grocery": "commercial.supermarket",
     "gas": "commercial.gas",
     "convenience": "commercial.convenience",
+    "hospital": "healthcare.hospital,healthcare.clinic,healthcare.emergency",
+    "pharmacy": "healthcare.pharmacy",
 }
 
 # Snap coordinates to ~1km grid to allow Redis reuse across nearby users
@@ -850,6 +852,7 @@ async def get_nearby_places(
             },
         )
 
+
     limit = max(1, min(limit, 50))
 
     # Snap coordinates to ~1km grid to share cache across nearby users
@@ -1057,4 +1060,3 @@ async def get_self_reports():
             status_code=500,
             content={"detail": f"Failed to fetch self reports: {str(e)}"},
         )
-
