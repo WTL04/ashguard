@@ -69,6 +69,8 @@ export default function TabsLayout() {
           tabBarIcon: ({ focused }) => <TabIcon icon="settings" focused={focused} />,
         }}
       />
+      {/* Hide resourcesSlider from being a tab */}
+      <Tabs.Screen name="map/resourcesSlider" options={{ href: null }} />
     </Tabs>
   );
 }
