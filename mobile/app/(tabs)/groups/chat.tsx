@@ -82,6 +82,7 @@ export default function ChatScreen() {
     return () => clearTimeout(timer);
   }, [messages]);
 
+  // ✅ FIX: Clear unread whenever messages change while chat is open
   useEffect(() => {
     const clearUnreadForCurrentUser = async () => {
       const currentUid = auth.currentUser?.uid;
@@ -96,8 +97,10 @@ export default function ChatScreen() {
       }
     };
 
-    clearUnreadForCurrentUser();
-  }, [chatId]);
+    if (messages.length > 0) {
+      clearUnreadForCurrentUser();
+    }
+  }, [chatId, messages]);
 
   const sendMessage = async () => {
     const trimmed = input.trim();
@@ -248,13 +251,8 @@ export default function ChatScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#EDEDED',
-  },
-  screen: {
-    flex: 1,
-  },
+  container: { flex: 1, backgroundColor: '#EDEDED' },
+  screen: { flex: 1 },
 
   header: {
     backgroundColor: '#F58500',
@@ -263,14 +261,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingBottom: 12,
   },
-  backButton: {
-    width: 32,
-    alignItems: 'flex-start',
-  },
-  headerCenter: {
-    flex: 1,
-    alignItems: 'center',
-  },
+  backButton: { width: 32 },
+  headerCenter: { flex: 1, alignItems: 'center' },
   headerAvatar: {
     width: 40,
     height: 40,
@@ -280,14 +272,8 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     marginBottom: 4,
   },
-  headerTitle: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: '700',
-  },
-  headerRightSpacer: {
-    width: 32,
-  },
+  headerTitle: { color: '#fff', fontSize: 16, fontWeight: '700' },
+  headerRightSpacer: { width: 32 },
 
   messagesList: {
     paddingHorizontal: 14,
@@ -295,16 +281,9 @@ const styles = StyleSheet.create({
     paddingBottom: 10,
   },
 
-  messageRow: {
-    marginBottom: 12,
-    flexDirection: 'row',
-  },
-  messageRowLeft: {
-    justifyContent: 'flex-start',
-  },
-  messageRowRight: {
-    justifyContent: 'flex-end',
-  },
+  messageRow: { marginBottom: 12, flexDirection: 'row' },
+  messageRowLeft: { justifyContent: 'flex-start' },
+  messageRowRight: { justifyContent: 'flex-end' },
 
   messageBubble: {
     maxWidth: '72%',
@@ -322,28 +301,17 @@ const styles = StyleSheet.create({
     borderBottomLeftRadius: 6,
   },
 
-  messageText: {
-    fontSize: 14,
-  },
-  myMessageText: {
-    color: '#fff',
-  },
-  otherMessageText: {
-    color: '#A85A00',
-  },
+  messageText: { fontSize: 14 },
+  myMessageText: { color: '#fff' },
+  otherMessageText: { color: '#A85A00' },
 
   messageTime: {
     fontSize: 11,
     marginTop: 6,
     alignSelf: 'flex-end',
   },
-  myMessageTime: {
-    color: 'rgba(255,255,255,0.8)',
-  },
-  otherMessageTime: {
-    color: '#A85A00',
-    opacity: 0.75,
-  },
+  myMessageTime: { color: 'rgba(255,255,255,0.8)' },
+  otherMessageTime: { color: '#A85A00', opacity: 0.75 },
 
   inputWrap: {
     paddingHorizontal: 10,
@@ -360,12 +328,6 @@ const styles = StyleSheet.create({
     paddingLeft: 14,
     paddingRight: 10,
   },
-  input: {
-    flex: 1,
-    fontSize: 14,
-    color: '#8C4B00',
-  },
-  sendButton: {
-    marginLeft: 8,
-  },
+  input: { flex: 1, fontSize: 14, color: '#8C4B00' },
+  sendButton: { marginLeft: 8 },
 });
