@@ -62,8 +62,8 @@ export const fetchNearbyResources = async (payload: {
     lat: latitude.toString(),
     lon: longitude.toString(),
     type,
-    radius: radius.toString(),
-    limit: limit.toString(),
+    radius: Math.round(radius).toString(),
+    limit: Math.round(limit).toString(),
   });
 
   const res = await fetch(`${BASE_URL}/api/v1/places/nearby?${params}`);

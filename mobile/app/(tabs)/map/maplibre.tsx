@@ -74,13 +74,42 @@ const getFeatureProp = <T,>(
   return (feature.properties?.[key] as T | undefined) ?? fallback;
 };
 
-const extractPlacesFromGeoJSON = (
-  data: GeoJSON.FeatureCollection
+const extractGeoapifyPlacesFromGeoJSON = (
+  data: GeoJSON.FeatureCollection,
+  userCoords: [number, number] | null
 ): NearbyPlace[] => {
-  return (data.features ?? [])
+  const toRadians = (value: number) => (value * Math.PI) / 180;
+
+  const getDistanceMeters = (
+    from: [number, number],
+    to: [number, number]
+  ): number => {
+    const [lon1, lat1] = from;
+    const [lon2, lat2] = to;
+
+    const R = 6371000;
+    const dLat = toRadians(lat2 - lat1);
+    const dLon = toRadians(lon2 - lon1);
+
+    const a =
+      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+      Math.cos(toRadians(lat1)) *
+        Math.cos(toRadians(lat2)) *
+        Math.sin(dLon / 2) *
+        Math.sin(dLon / 2);
+
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return R * c;
+  };
+
+  const places = (data.features ?? [])
     .filter((f): f is GeoJSON.Feature<GeoJSON.Point> => f.geometry?.type === 'Point')
     .map((f, index) => {
       const coords = f.geometry.coordinates as [number, number];
+
+      const computedDistance = userCoords
+        ? getDistanceMeters(userCoords, coords)
+        : undefined;
 
       return {
         id: String(
@@ -93,16 +122,103 @@ const extractPlacesFromGeoJSON = (
         longitude: coords[0],
         address:
           getFeatureProp<string>(f, 'address') ??
+          getFeatureProp<string>(f, 'address_line1') ??
           getFeatureProp<string>(f, 'address_line2'),
         type:
           (getFeatureProp<string>(f, 'resource_type') as ResourceType) ?? 'grocery',
         distanceMeters:
           getFeatureProp<number>(f, 'distanceMeters') ??
-          getFeatureProp<number>(f, 'distance'),
+          getFeatureProp<number>(f, 'distance') ??
+          computedDistance,
         rating: getFeatureProp<number>(f, 'rating'),
         isOpen: getFeatureProp<boolean>(f, 'isOpen'),
       };
     });
+
+  return userCoords
+    ? places.sort(
+        (a, b) =>
+          (a.distanceMeters ?? Number.MAX_SAFE_INTEGER) -
+          (b.distanceMeters ?? Number.MAX_SAFE_INTEGER)
+      )
+    : places;
+};
+
+const extractHospitalsFromGeoJSON = (
+  data: GeoJSON.FeatureCollection,
+  userCoords: [number, number] | null
+): NearbyPlace[] => {
+  const toRadians = (value: number) => (value * Math.PI) / 180;
+
+  const getDistanceMeters = (
+    from: [number, number],
+    to: [number, number]
+  ): number => {
+    const [lon1, lat1] = from;
+    const [lon2, lat2] = to;
+
+    const R = 6371000;
+    const dLat = toRadians(lat2 - lat1);
+    const dLon = toRadians(lon2 - lon1);
+
+    const a =
+      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+      Math.cos(toRadians(lat1)) *
+        Math.cos(toRadians(lat2)) *
+        Math.sin(dLon / 2) *
+        Math.sin(dLon / 2);
+
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return R * c;
+  };
+
+  const places = (data.features ?? [])
+    .filter((f): f is GeoJSON.Feature<GeoJSON.Point> => f.geometry?.type === 'Point')
+    .map((f, index) => {
+      const coords = f.geometry.coordinates as [number, number];
+      const props = f.properties ?? {};
+
+      const name =
+        (props.NAME as string) ??
+        (props.Name as string) ??
+        (props.name as string) ??
+        (props.FACILITY as string) ??
+        'Unnamed hospital';
+
+      const address =
+        (props.ADDRESS as string) ??
+        (props.Address as string) ??
+        (props.address as string) ??
+        [props.CITY, props.STATE]
+          .filter(Boolean)
+          .join(', ');
+
+      const distanceMeters = userCoords
+        ? getDistanceMeters(userCoords, coords)
+        : undefined;
+
+      return {
+        id: String(
+          props.OBJECTID ??
+          props.ID ??
+          props.id ??
+          props.place_id ??
+          index
+        ),
+        name,
+        latitude: coords[1],
+        longitude: coords[0],
+        address: address || undefined,
+        type: 'hospital' as ResourceType,
+        distanceMeters,
+      };
+    });
+
+  return userCoords
+    ? places.sort(
+        (a, b) => (a.distanceMeters ?? Number.MAX_SAFE_INTEGER) - (b.distanceMeters ?? Number.MAX_SAFE_INTEGER)
+      )
+    : places;
 };
 
 export default function MapLibre() {
@@ -131,11 +247,12 @@ export default function MapLibre() {
 
   // Resource state
   const [resourcesData, setResourcesData] = useState<GeoJSON.FeatureCollection | null>(null);
+  const [hospitalsData, setHospitalsData] = useState<GeoJSON.FeatureCollection | null>(null);
   const [resourcesLoading, setResourcesLoading] = useState(false);
   const [resourcesError, setResourcesError] = useState<string | null>(null);
   const [nearbyPlaces, setNearbyPlaces] = useState<NearbyPlace[]>([]);
   const [selectedPlaceId, setSelectedPlaceId] = useState<string | null>(null);
-  const [resourceType, setResourceType] = useState<ResourceType>('grocery');
+  const [resourceType, setResourceType] = useState<ResourceType>('hospital');
   const [sheetOpen, setSheetOpen] = useState(false);
   const [distanceRadius, setDistanceRadius] = useState(10000); // default set to 10000 meters
 
@@ -231,10 +348,14 @@ export default function MapLibre() {
             (f: GeoJSON.Feature) => f.properties?.prescribed_date_start
           ),
         ];
-
         setPrescribedData({
           type: 'FeatureCollection',
           features: prescribedFeatures,
+        });
+
+        setHospitalsData({
+          type: 'FeatureCollection',
+          features: data.hospitals?.features ?? [],
         });
 
         setFiresLoading(false);
@@ -275,6 +396,18 @@ export default function MapLibre() {
         setResourcesLoading(true);
         setResourcesError(null);
 
+        if (resourceType === 'hospital') {
+          const hospitalCollection: GeoJSON.FeatureCollection = hospitalsData ?? {
+            type: 'FeatureCollection',
+            features: [],
+          };
+
+          setResourcesData(hospitalCollection);
+          setNearbyPlaces(extractHospitalsFromGeoJSON(hospitalCollection, userCoords));
+          setSheetOpen(true);
+          return;
+        }
+
         const [longitude, latitude] = userCoords;
 
         const data = await fetchNearbyResources({
@@ -285,8 +418,8 @@ export default function MapLibre() {
         });
 
         setResourcesData(data);
-        setNearbyPlaces(extractPlacesFromGeoJSON(data));
-        setSheetOpen(true);
+        setNearbyPlaces(extractGeoapifyPlacesFromGeoJSON(data, userCoords));
+        setSheetOpen(true); 
       } catch (err) {
         console.error('Failed to fetch nearby resources:', err);
         setResourcesError('Failed to load nearby resources');
@@ -296,7 +429,7 @@ export default function MapLibre() {
     };
 
     loadResources();
-  }, [userCoords, resourceType, distanceRadius]);
+  }, [userCoords, resourceType, distanceRadius, hospitalsData]);
 
   useEffect(() => {
     if (!mapReady) return;
@@ -331,7 +464,7 @@ export default function MapLibre() {
     setSelectedStation(null);
     setSelectedPlaceId(null);
     setSelectedData(feature);
-    setSheetOpen(false);
+    // Keep sheet mounted but peek-only (just the drag handle)
 
     const center = getFeatureCenter(feature);
     if (center && cameraRef.current) {
@@ -343,7 +476,7 @@ export default function MapLibre() {
     setSelectedData(null);
     setSelectedPlaceId(null);
     setSelectedStation(feature);
-    setSheetOpen(false);
+    // Keep sheet mounted but peek-only (just the drag handle)
 
     const center = getFeatureCenter(feature);
     if (center && cameraRef.current) {
@@ -354,7 +487,11 @@ export default function MapLibre() {
   const handleResourcePress = (feature: GeoJSON.Feature) => {
     const center = getFeatureCenter(feature);
     const id = String(
-      feature.properties?.id ?? feature.properties?.place_id ?? ''
+      feature.properties?.id ??
+      feature.properties?.place_id ??
+      feature.properties?.OBJECTID ??
+      feature.properties?.ID ??
+      ''
     );
 
     setSelectedData(null);
@@ -475,16 +612,51 @@ export default function MapLibre() {
     }
   };
 
+  const visibleNearbyPlaces = useMemo(() => {
+    if (resourceType === 'hospital') {
+      return nearbyPlaces.filter(
+        (place) =>
+          place.distanceMeters == null || place.distanceMeters <= distanceRadius
+      );
+    }
+
+    return nearbyPlaces;
+  }, [nearbyPlaces, resourceType, distanceRadius]);
+
+  const visibleResourcesData = useMemo<GeoJSON.FeatureCollection | null>(() => {
+  if (!resourcesData) return null;
+
+  const allowedIds = new Set(visibleNearbyPlaces.map((place) => place.id));
+
+  return {
+    type: 'FeatureCollection',
+    features: (resourcesData.features ?? []).filter((feature) => {
+      const id = String(
+        feature.properties?.id ??
+        feature.properties?.place_id ??
+        feature.properties?.OBJECTID ??
+        feature.properties?.ID ??
+        ''
+      );
+
+      return allowedIds.has(id);
+    }),
+  };
+}, [resourcesData, visibleNearbyPlaces]);
+
   const hotspotsCount = hotspotsData?.features.length ?? 0;
   const perimetersCount = perimetersData?.features.length ?? 0;
   const prescribedCount = prescribedData?.features.length ?? 0;
   const weatherCount = weatherData?.features.length ?? 0;
-  const resourcesCount = nearbyPlaces.length;
+  const resourcesCount = visibleNearbyPlaces.length;
 
   const mapLightMode =
     'https://basemaps.cartocdn.com/gl/voyager-gl-style/style.json';
 
-  const selectedResourceFeatureId = useMemo(() => selectedPlaceId ?? '', [selectedPlaceId]);
+  const selectedResourceFeatureId = useMemo(
+    () => selectedPlaceId ?? '__none__',
+    [selectedPlaceId]
+  );
 
   return (
     <View style={styles.root}>
@@ -583,10 +755,10 @@ export default function MapLibre() {
           </ShapeSource>
         )}
 
-        {(activeFilter === 'all' || activeFilter === 'resources') && resourcesData && (
+        {(activeFilter === 'all' || activeFilter === 'resources') && visibleResourcesData && (
           <ShapeSource
             id="resources-data"
-            shape={resourcesData}
+            shape={visibleResourcesData}
             onPress={(e) => handleResourcePress(e.features[0])}
           >
             <CircleLayer
@@ -594,13 +766,27 @@ export default function MapLibre() {
               style={{
                 circleColor: [
                   'case',
-                  ['==', ['to-string', ['coalesce', ['get', 'id'], ['get', 'place_id'], '']], selectedResourceFeatureId],
+                  [
+                    '==',
+                    [
+                      'to-string',
+                      ['coalesce', ['get', 'id'], ['get', 'place_id'], ['get', 'OBJECTID'], ['get', 'ID'], '__none__']
+                    ],
+                    selectedResourceFeatureId
+                  ],
                   '#F58500',
                   '#10B981',
                 ],
                 circleRadius: [
                   'case',
-                  ['==', ['to-string', ['coalesce', ['get', 'id'], ['get', 'place_id'], '']], selectedResourceFeatureId],
+                  [
+                    '==',
+                    [
+                      'to-string',
+                      ['coalesce', ['get', 'id'], ['get', 'place_id'], ['get', 'OBJECTID'], ['get', 'ID'], '__none__']
+                    ],
+                    selectedResourceFeatureId
+                  ],
                   7,
                   5,
                 ],
@@ -824,11 +1010,11 @@ export default function MapLibre() {
               </Text>
             )}
 
-            {selectedData.properties?.satellite && (
+            {!!selectedData.properties?.satellite && (
               <Text style={styles.popupDetail}>🛰️ Source: {selectedData.properties.satellite}</Text>
             )}
 
-            {selectedData.properties?.confidence && (
+            {!!selectedData.properties?.confidence && (
               <Text style={styles.popupDetail}>
                 🎯 Confidence:{' '}
                 {CONFIDENCE_MAP[selectedData.properties.confidence] ??
@@ -836,47 +1022,47 @@ export default function MapLibre() {
               </Text>
             )}
 
-            {selectedData.properties?.acq_date && (
+            {!!selectedData.properties?.acq_date && (
               <Text style={styles.popupDetail}>📅 Acquired: {selectedData.properties.acq_date}</Text>
             )}
 
-            {selectedData.properties?.name && (
+            {!!selectedData.properties?.name && (
               <Text style={styles.popupDetail}>🌿 Name: {selectedData.properties.name}</Text>
             )}
 
-            {selectedData.properties?.prescribed_date_start && (
+            {!!selectedData.properties?.prescribed_date_start && (
               <Text style={styles.popupDetail}>
                 🗓️ Start Date: {selectedData.properties.prescribed_date_start}
               </Text>
             )}
 
-            {selectedData.properties?.incident_name && (
+            {!!selectedData.properties?.incident_name && (
               <Text style={styles.popupDetail}>
                 🔥 Incident Name: {selectedData.properties.incident_name}
               </Text>
             )}
 
-            {selectedData.properties?.incident_number && (
+            {!!selectedData.properties?.incident_number && (
               <Text style={styles.popupDetail}>
                 📋 Incident #: {selectedData.properties.incident_number}
               </Text>
             )}
 
-            {selectedData.properties?.source && (
+            {!!selectedData.properties?.source && selectedData.properties.source !== 'user' && (
               <Text style={styles.popupDetail}>📡 Source: {selectedData.properties.source}</Text>
             )}
 
-            {selectedData.properties?.mission && (
+            {!!selectedData.properties?.mission && (
               <Text style={styles.popupDetail}>🎯 Mission: {selectedData.properties.mission}</Text>
             )}
 
-            {selectedData.properties?.displayStatus && (
+            {!!selectedData.properties?.displayStatus && (
               <Text style={styles.popupDetail}>
                 📊 Status: {selectedData.properties.displayStatus}
               </Text>
             )}
 
-            {selectedData.properties?.description && (
+            {!!selectedData.properties?.description && selectedData.properties.source !== 'user' && (
               <Text style={styles.popupDetail}>
                 📝 Description: {selectedData.properties.description}
               </Text>
@@ -999,7 +1185,7 @@ export default function MapLibre() {
                     <ActivityIndicator size="small" color="#fff" />
                   ) : (
                     <Text style={styles.reportConfirmText}>Confirm</Text>
-                  )} </TouchableOpacity>
+                  )}</TouchableOpacity>
               </View>
             </View>
           </View>
@@ -1010,7 +1196,9 @@ export default function MapLibre() {
       {/* Slider for resources */}
       <ResourceBottomSheet
         visible={sheetOpen}
-        places={nearbyPlaces}
+        peekOnly={!!(selectedData || selectedStation)}
+        isResourcesFilterActive={activeFilter === 'resources'}
+        places={visibleNearbyPlaces}
         selectedPlaceId={selectedPlaceId}
         distanceRadius={distanceRadius}
         resourceType={resourceType}
