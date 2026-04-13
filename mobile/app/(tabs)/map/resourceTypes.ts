@@ -10,6 +10,9 @@ export type ResourceType =
   | "hospital"
   | "pharmacy";
 
+// Used for the filter chips — includes "all" as a special UI value
+export type ResourceFilterType = ResourceType | "all";
+
 export type NearbyPlace = {
   id: string;
   name: string;

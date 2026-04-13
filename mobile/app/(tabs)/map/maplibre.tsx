@@ -32,9 +32,10 @@ import {
   fetchFireData,
   fetchWeatherData,
   submitSelfReport,
-  fetchSelfReports,
   fetchNearbyResources,
 } from '../../services/mapApi';
+import { collection, query, where, onSnapshot } from 'firebase/firestore';
+import { db } from '@/lib/firebaseConfig';
 
 import ResourceBottomSheet from './resourcesSlider';
 
@@ -50,7 +51,7 @@ const FILTERS = [
 
 type FilterId = typeof FILTERS[number]['id'];
 
-import { ResourceType, NearbyPlace } from "./resourceTypes";
+import { ResourceType, ResourceFilterType, NearbyPlace } from './resourceTypes';
 
 const CA_CENTER: [number, number] = [-119.4179, 36.7783];
 const CA_ZOOM = 6;
@@ -115,8 +116,8 @@ const extractGeoapifyPlacesFromGeoJSON = (
       return {
         id: String(
           getFeatureProp<string | number>(f, 'id') ??
-          getFeatureProp<string | number>(f, 'place_id') ??
-          index
+            getFeatureProp<string | number>(f, 'place_id') ??
+            index
         ),
         name: getFeatureProp<string>(f, 'name', 'Unnamed place') ?? 'Unnamed place',
         latitude: coords[1],
@@ -190,9 +191,7 @@ const extractHospitalsFromGeoJSON = (
         (props.ADDRESS as string) ??
         (props.Address as string) ??
         (props.address as string) ??
-        [props.CITY, props.STATE]
-          .filter(Boolean)
-          .join(', ');
+        [props.CITY, props.STATE].filter(Boolean).join(', ');
 
       const distanceMeters = userCoords
         ? getDistanceMeters(userCoords, coords)
@@ -201,10 +200,10 @@ const extractHospitalsFromGeoJSON = (
       return {
         id: String(
           props.OBJECTID ??
-          props.ID ??
-          props.id ??
-          props.place_id ??
-          index
+            props.ID ??
+            props.id ??
+            props.place_id ??
+            index
         ),
         name,
         latitude: coords[1],
@@ -217,12 +216,16 @@ const extractHospitalsFromGeoJSON = (
 
   return userCoords
     ? places.sort(
-        (a, b) => (a.distanceMeters ?? Number.MAX_SAFE_INTEGER) - (b.distanceMeters ?? Number.MAX_SAFE_INTEGER)
+        (a, b) =>
+          (a.distanceMeters ?? Number.MAX_SAFE_INTEGER) -
+          (b.distanceMeters ?? Number.MAX_SAFE_INTEGER)
       )
     : places;
 };
 
-const getResourceMarkerIconName = (type: ResourceType): keyof typeof Ionicons.glyphMap => {
+const getResourceMarkerIconName = (
+  type: ResourceType
+): keyof typeof Ionicons.glyphMap => {
   switch (type) {
     case 'hospital':
       return 'medkit';
@@ -248,13 +251,12 @@ const getResourceFeatureType = (feature: GeoJSON.Feature): ResourceType => {
 
   if (rawType) return rawType;
 
-  const name =
-    String(
-      feature.properties?.NAME ??
+  const name = String(
+    feature.properties?.NAME ??
       feature.properties?.Name ??
       feature.properties?.name ??
       ''
-    ).toLowerCase();
+  ).toLowerCase();
 
   if (name.includes('hospital')) return 'hospital';
   return 'hospital';
@@ -291,14 +293,54 @@ export default function MapLibre() {
   const [resourcesError, setResourcesError] = useState<string | null>(null);
   const [nearbyPlaces, setNearbyPlaces] = useState<NearbyPlace[]>([]);
   const [selectedPlaceId, setSelectedPlaceId] = useState<string | null>(null);
-  const [resourceType, setResourceType] = useState<ResourceType>('hospital');
+  const [resourceType, setResourceType] = useState<ResourceFilterType>('all');
   const [sheetOpen, setSheetOpen] = useState(false);
-  const [distanceRadius, setDistanceRadius] = useState(10000); // default set to 10000 meters
+  const [distanceRadius, setDistanceRadius] = useState(10000);
 
   // Report fire modal state
   const [reportModalVisible, setReportModalVisible] = useState(false);
   const [submittingReport, setSubmittingReport] = useState(false);
   const [selfReportsData, setSelfReportsData] = useState<GeoJSON.FeatureCollection | null>(null);
+
+  // Selected marker ids for visual highlighting
+  const [selectedFireId, setSelectedFireId] = useState<string | null>(null);
+  const [selectedWeatherId, setSelectedWeatherId] = useState<string | null>(null);
+
+  const clearSelections = () => {
+    setSelectedData(null);
+    setSelectedStation(null);
+    setSelectedPlaceId(null);
+    setSelectedFireId(null);
+    setSelectedWeatherId(null);
+  };
+
+  const focusCameraOnCoordinate = (
+    coordinate: [number, number],
+    zoomLevel = 13
+  ) => {
+    if (!cameraRef.current) return;
+
+    cameraRef.current.setCamera({
+      centerCoordinate: coordinate,
+      zoomLevel,
+      heading: 0,
+      pitch: 0,
+      animationMode: 'flyTo',
+      animationDuration: 600,
+    });
+  };
+
+  const getFeatureId = (feature: GeoJSON.Feature, fallback = ''): string => {
+    return String(
+      feature.properties?.id ??
+        feature.properties?.place_id ??
+        feature.properties?.OBJECTID ??
+        feature.properties?.ID ??
+        feature.properties?.reportId ??
+        feature.properties?.incident_number ??
+        fallback
+    );
+  };
 
   useEffect(() => {
     (async () => {
@@ -389,6 +431,7 @@ export default function MapLibre() {
             (f: GeoJSON.Feature) => f.properties?.prescribed_date_start
           ),
         ];
+
         setPrescribedData({
           type: 'FeatureCollection',
           features: prescribedFeatures,
@@ -429,6 +472,15 @@ export default function MapLibre() {
       });
   }, [mapReady]);
 
+  const ALL_RESOURCE_TYPES: ResourceType[] = [
+    'hospital',
+    'pharmacy',
+    'gas',
+    'grocery',
+    'hotels',
+    'convenience',
+  ];
+
   useEffect(() => {
     if (!userCoords) return;
 
@@ -437,19 +489,75 @@ export default function MapLibre() {
         setResourcesLoading(true);
         setResourcesError(null);
 
+        const [longitude, latitude] = userCoords;
+
+        if (resourceType === 'all') {
+          const apiTypes: ResourceType[] = [
+            'pharmacy',
+            'gas',
+            'grocery',
+            'hotels',
+            'convenience',
+          ];
+
+          const [apiResults, hospitalCollection] = await Promise.all([
+            Promise.all(
+              apiTypes.map((type) =>
+                fetchNearbyResources({ latitude, longitude, type, radius: distanceRadius })
+                  .then((data) => extractGeoapifyPlacesFromGeoJSON(data, userCoords))
+                  .catch(() => [] as NearbyPlace[])
+              )
+            ),
+            Promise.resolve(
+              extractHospitalsFromGeoJSON(
+                hospitalsData ?? { type: 'FeatureCollection', features: [] },
+                userCoords
+              ).filter((p) => p.distanceMeters == null || p.distanceMeters <= distanceRadius)
+            ),
+          ]);
+
+          const allPlaces = [hospitalCollection, ...apiResults].flat();
+
+          const seen = new Set<string>();
+          const dedupedPlaces = allPlaces.filter((p) => {
+            if (seen.has(p.id)) return false;
+            seen.add(p.id);
+            return true;
+          });
+
+          dedupedPlaces.sort(
+            (a, b) =>
+              (a.distanceMeters ?? Number.MAX_SAFE_INTEGER) -
+              (b.distanceMeters ?? Number.MAX_SAFE_INTEGER)
+          );
+
+          const mergedFeatures: GeoJSON.Feature[] = dedupedPlaces.map((place) => ({
+            type: 'Feature',
+            geometry: { type: 'Point', coordinates: [place.longitude, place.latitude] },
+            properties: {
+              id: place.id,
+              name: place.name,
+              resource_type: place.type,
+              distanceMeters: place.distanceMeters,
+            },
+          }));
+
+          setResourcesData({ type: 'FeatureCollection', features: mergedFeatures });
+          setNearbyPlaces(dedupedPlaces);
+          setSheetOpen(true);
+          return;
+        }
+
         if (resourceType === 'hospital') {
           const hospitalCollection: GeoJSON.FeatureCollection = hospitalsData ?? {
             type: 'FeatureCollection',
             features: [],
           };
-
           setResourcesData(hospitalCollection);
           setNearbyPlaces(extractHospitalsFromGeoJSON(hospitalCollection, userCoords));
           setSheetOpen(true);
           return;
         }
-
-        const [longitude, latitude] = userCoords;
 
         const data = await fetchNearbyResources({
           latitude,
@@ -460,7 +568,7 @@ export default function MapLibre() {
 
         setResourcesData(data);
         setNearbyPlaces(extractGeoapifyPlacesFromGeoJSON(data, userCoords));
-        setSheetOpen(true); 
+        setSheetOpen(true);
       } catch (err) {
         console.error('Failed to fetch nearby resources:', err);
         setResourcesError('Failed to load nearby resources');
@@ -474,7 +582,40 @@ export default function MapLibre() {
 
   useEffect(() => {
     if (!mapReady) return;
-    loadSelfReports();
+
+    const q = query(collection(db, 'self_reports'), where('isActive', '==', true));
+
+    const unsubscribe = onSnapshot(
+      q,
+      (snapshot) => {
+        const features: GeoJSON.Feature[] = snapshot.docs.map((doc) => {
+          const data = doc.data();
+          return {
+            type: 'Feature',
+            geometry: {
+              type: 'Point',
+              coordinates: [data.longitude, data.latitude],
+            },
+            properties: {
+              reportId: doc.id,
+              type: data.type ?? 'fire',
+              status: data.status ?? 'pending',
+              description: data.description ?? '',
+              source: data.source ?? 'user',
+              confirmedCount: data.confirmedCount ?? 0,
+              isActive: data.isActive ?? true,
+            },
+          };
+        });
+
+        setSelfReportsData({ type: 'FeatureCollection', features });
+      },
+      (err) => {
+        console.error('Self-reports listener error:', err);
+      }
+    );
+
+    return () => unsubscribe();
   }, [mapReady]);
 
   const getFeatureCenter = (feature: GeoJSON.Feature): [number, number] | null => {
@@ -486,7 +627,9 @@ export default function MapLibre() {
     }
 
     if (geom.type === 'Polygon' || geom.type === 'MultiPolygon') {
-      const coords = geom.type === 'Polygon' ? geom.coordinates[0] : geom.coordinates[0][0];
+      const coords =
+        geom.type === 'Polygon' ? geom.coordinates[0] : geom.coordinates[0][0];
+
       let sumLng = 0;
       let sumLat = 0;
 
@@ -502,58 +645,67 @@ export default function MapLibre() {
   };
 
   const handleFirePress = (feature: GeoJSON.Feature) => {
+    const featureId = getFeatureId(feature);
+
     setSelectedStation(null);
     setSelectedPlaceId(null);
+    setSelectedWeatherId(null);
+    setSelectedFireId(featureId);
     setSelectedData(feature);
-    // Keep sheet mounted but peek-only (just the drag handle)
 
     const center = getFeatureCenter(feature);
-    if (center && cameraRef.current) {
-      cameraRef.current.flyTo(center, 500);
+    if (center) {
+      const zoom =
+        feature.geometry?.type === 'Polygon' || feature.geometry?.type === 'MultiPolygon'
+          ? 10
+          : 13;
+
+      focusCameraOnCoordinate(center, zoom);
     }
   };
 
   const handleStationPress = (feature: GeoJSON.Feature) => {
+    const featureId = getFeatureId(feature);
+
     setSelectedData(null);
     setSelectedPlaceId(null);
+    setSelectedFireId(null);
+    setSelectedWeatherId(featureId);
     setSelectedStation(feature);
-    // Keep sheet mounted but peek-only (just the drag handle)
 
     const center = getFeatureCenter(feature);
-    if (center && cameraRef.current) {
-      cameraRef.current.flyTo(center, 500);
+    if (center) {
+      focusCameraOnCoordinate(center, 13);
     }
   };
 
   const handleResourcePress = (feature: GeoJSON.Feature) => {
     const center = getFeatureCenter(feature);
-    const id = String(
-      feature.properties?.id ??
-      feature.properties?.place_id ??
-      feature.properties?.OBJECTID ??
-      feature.properties?.ID ??
-      ''
-    );
+    const id = getFeatureId(feature);
 
     setSelectedData(null);
     setSelectedStation(null);
+    setSelectedFireId(null);
+    setSelectedWeatherId(null);
     setSelectedPlaceId(id);
     setSheetOpen(true);
 
-    if (center && cameraRef.current) {
-      cameraRef.current.flyTo(center, 500);
+    if (center) {
+      focusCameraOnCoordinate(center, 13);
     }
   };
 
   const handleSelectPlaceFromSheet = (place: NearbyPlace) => {
     setSelectedData(null);
     setSelectedStation(null);
-    
+    setSelectedFireId(null);
+    setSelectedWeatherId(null);
+
     if (selectedPlaceId === place.id) {
       setSelectedPlaceId(null);
     } else {
       setSelectedPlaceId(place.id);
-      cameraRef.current?.flyTo([place.longitude, place.latitude], 500);
+      focusCameraOnCoordinate([place.longitude, place.latitude], 13);
     }
   };
 
@@ -565,6 +717,8 @@ export default function MapLibre() {
 
   const handleLocateMe = async () => {
     if (!cameraRef.current) return;
+
+    clearSelections();
 
     try {
       const current = await Location.getCurrentPositionAsync({
@@ -609,9 +763,7 @@ export default function MapLibre() {
       return;
     }
 
-    setSelectedData(null);
-    setSelectedStation(null);
-    setSelectedPlaceId(null);
+    clearSelections();
     setReportModalVisible(true);
   };
 
@@ -632,8 +784,6 @@ export default function MapLibre() {
         description: 'User-reported fire',
       });
 
-      await loadSelfReports();
-
       setReportModalVisible(false);
 
       Alert.alert(
@@ -648,20 +798,12 @@ export default function MapLibre() {
     }
   };
 
-  const loadSelfReports = async () => {
-    try {
-      const data = await fetchSelfReports();
-      setSelfReportsData(data);
-    } catch (err) {
-      console.error('Failed to fetch self reports:', err);
-    }
-  };
-
   const visibleNearbyPlaces = useMemo(() => {
+    if (resourceType === 'all') return nearbyPlaces;
+
     if (resourceType === 'hospital') {
       return nearbyPlaces.filter(
-        (place) =>
-          place.distanceMeters == null || place.distanceMeters <= distanceRadius
+        (place) => place.distanceMeters == null || place.distanceMeters <= distanceRadius
       );
     }
 
@@ -669,32 +811,32 @@ export default function MapLibre() {
   }, [nearbyPlaces, resourceType, distanceRadius]);
 
   const visibleResourcesData = useMemo<GeoJSON.FeatureCollection | null>(() => {
-  if (!resourcesData) return null;
+    if (!resourcesData) return null;
 
-  const allowedIds = new Set(visibleNearbyPlaces.map((place) => place.id));
+    const allowedIds = new Set(visibleNearbyPlaces.map((place) => place.id));
 
-  return {
-    type: 'FeatureCollection',
-    features: (resourcesData.features ?? []).filter((feature) => {
-      const id = String(
-        feature.properties?.id ??
-        feature.properties?.place_id ??
-        feature.properties?.OBJECTID ??
-        feature.properties?.ID ??
-        ''
-      );
+    return {
+      type: 'FeatureCollection',
+      features: (resourcesData.features ?? []).filter((feature) => {
+        const id = String(
+          feature.properties?.id ??
+            feature.properties?.place_id ??
+            feature.properties?.OBJECTID ??
+            feature.properties?.ID ??
+            ''
+        );
 
-      return allowedIds.has(id);
-    }),
-  };
-}, [resourcesData, visibleNearbyPlaces]);
+        return allowedIds.has(id);
+      }),
+    };
+  }, [resourcesData, visibleNearbyPlaces]);
 
-const visibleResourcePointFeatures = useMemo<GeoJSON.Feature<GeoJSON.Point>[]>(() => {
-  return (visibleResourcesData?.features ?? []).filter(
-    (feature): feature is GeoJSON.Feature<GeoJSON.Point> =>
-      feature.geometry?.type === 'Point'
-  );
-}, [visibleResourcesData]);
+  const visibleResourcePointFeatures = useMemo<GeoJSON.Feature<GeoJSON.Point>[]>(() => {
+    return (visibleResourcesData?.features ?? []).filter(
+      (feature): feature is GeoJSON.Feature<GeoJSON.Point> =>
+        feature.geometry?.type === 'Point'
+    );
+  }, [visibleResourcesData]);
 
   const hotspotsCount = hotspotsData?.features.length ?? 0;
   const perimetersCount = perimetersData?.features.length ?? 0;
@@ -708,6 +850,16 @@ const visibleResourcePointFeatures = useMemo<GeoJSON.Feature<GeoJSON.Point>[]>((
   const selectedResourceFeatureId = useMemo(
     () => selectedPlaceId ?? '__none__',
     [selectedPlaceId]
+  );
+
+  const selectedFireFeatureId = useMemo(
+    () => selectedFireId ?? '__none__',
+    [selectedFireId]
+  );
+
+  const selectedWeatherFeatureId = useMemo(
+    () => selectedWeatherId ?? '__none__',
+    [selectedWeatherId]
   );
 
   return (
@@ -747,9 +899,33 @@ const visibleResourcePointFeatures = useMemo<GeoJSON.Feature<GeoJSON.Point>[]>((
             <CircleLayer
               id="hotspots-layer"
               style={{
-                circleColor: '#FF6B35',
-                circleRadius: 3,
-                circleOpacity: 0.85,
+                circleColor: [
+                  'case',
+                  [
+                    '==',
+                    [
+                      'to-string',
+                      ['coalesce', ['get', 'id'], ['get', 'OBJECTID'], ['get', 'incident_number'], ''],
+                    ],
+                    selectedFireFeatureId,
+                  ],
+                  '#C2410C',
+                  '#FF6B35',
+                ],
+                circleRadius: [
+                  'case',
+                  [
+                    '==',
+                    [
+                      'to-string',
+                      ['coalesce', ['get', 'id'], ['get', 'OBJECTID'], ['get', 'incident_number'], ''],
+                    ],
+                    selectedFireFeatureId,
+                  ],
+                  5,
+                  3,
+                ],
+                circleOpacity: 0.9,
                 circleStrokeWidth: 1,
                 circleStrokeColor: '#FFFFFF',
               }}
@@ -766,106 +942,238 @@ const visibleResourcePointFeatures = useMemo<GeoJSON.Feature<GeoJSON.Point>[]>((
             <FillLayer
               id="perimeters-layer"
               style={{
-                fillColor: '#FF4444',
+                fillColor: [
+                  'case',
+                  [
+                    '==',
+                    [
+                      'to-string',
+                      ['coalesce', ['get', 'id'], ['get', 'OBJECTID'], ['get', 'incident_number'], ''],
+                    ],
+                    selectedFireFeatureId,
+                  ],
+                  '#B91C1C',
+                  '#FF4444',
+                ],
                 fillOpacity: 1,
-                fillOutlineColor: '#CC0000',
+                fillOutlineColor: [
+                  'case',
+                  [
+                    '==',
+                    [
+                      'to-string',
+                      ['coalesce', ['get', 'id'], ['get', 'OBJECTID'], ['get', 'incident_number'], ''],
+                    ],
+                    selectedFireFeatureId,
+                  ],
+                  '#7F1D1D',
+                  '#CC0000',
+                ],
               }}
             />
           </ShapeSource>
         )}
+
+        {(activeFilter === 'all' || activeFilter === 'prescribed') &&
+          (prescribedData?.features ?? [])
+            .filter((f): f is GeoJSON.Feature<GeoJSON.Point> => f.geometry?.type === 'Point')
+            .map((feature, idx) => {
+              const coords = feature.geometry.coordinates as [number, number];
+              const id = getFeatureId(feature, String(idx));
+              const selected = selectedFireId === id;
+
+              return (
+                <PointAnnotation
+                  key={`prescribed-${id}-${selected ? 'sel' : 'def'}`}
+                  id={`prescribed-${id}`}
+                  coordinate={coords}
+                  onSelected={() => handleFirePress(feature)}
+                >
+                  <View
+                    style={{
+                      width: 24,
+                      height: 24,
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                    }}
+                  >
+                    <View
+                      style={[
+                        styles.prescribedMarker,
+                        selected && styles.prescribedMarkerSelected,
+                      ]}
+                    >
+                      <Ionicons name="leaf" size={12} color="#FFFFFF" />
+                    </View>
+                  </View>
+                </PointAnnotation>
+              );
+            })}
 
         {(activeFilter === 'all' || activeFilter === 'prescribed') && prescribedData && (
           <ShapeSource
-            id="prescribed-data"
-            shape={prescribedData}
+            id="prescribed-polygon-data"
+            shape={{
+              type: 'FeatureCollection',
+              features: (prescribedData.features ?? []).filter(
+                (f) => f.geometry?.type !== 'Point'
+              ),
+            }}
             onPress={(e) => handleFirePress(e.features[0])}
           >
-            <CircleLayer
-              id="prescribed-fires-layer"
+            <FillLayer
+              id="prescribed-polygon-layer"
               style={{
-                circleColor: '#31bf24',
-                circleRadius: 2,
-                circleOpacity: 0.85,
-                circleStrokeWidth: 1,
-                circleStrokeColor: '#FFFFFF',
+                fillColor: [
+                  'case',
+                  [
+                    '==',
+                    [
+                      'to-string',
+                      ['coalesce', ['get', 'id'], ['get', 'OBJECTID'], ['get', 'incident_number'], ''],
+                    ],
+                    selectedFireFeatureId,
+                  ],
+                  '#5B21B6',
+                  '#7C3AED',
+                ],
+                fillOpacity: 0.45,
+                fillOutlineColor: [
+                  'case',
+                  [
+                    '==',
+                    [
+                      'to-string',
+                      ['coalesce', ['get', 'id'], ['get', 'OBJECTID'], ['get', 'incident_number'], ''],
+                    ],
+                    selectedFireFeatureId,
+                  ],
+                  '#4C1D95',
+                  '#5B21B6',
+                ],
               }}
             />
           </ShapeSource>
         )}
 
-        {(activeFilter === 'all' || activeFilter === 'weather') && weatherData && (
-          <ShapeSource
-            id="weather-data"
-            shape={weatherData}
-            onPress={(e) => handleStationPress(e.features[0])}
-          >
-            <CircleLayer
-              id="weather-layer"
-              style={{
-                circleColor: '#3B82F6',
-                circleRadius: 5,
-                circleOpacity: 0.9,
-                circleStrokeWidth: 1.5,
-                circleStrokeColor: '#FFFFFF',
-              }}
-            />
-          </ShapeSource>
-        )}
+        {(activeFilter === 'all' || activeFilter === 'weather') &&
+          (weatherData?.features ?? [])
+            .filter((f): f is GeoJSON.Feature<GeoJSON.Point> => f.geometry?.type === 'Point')
+            .map((feature, idx) => {
+              const coords = feature.geometry.coordinates as [number, number];
+              const id = getFeatureId(feature, String(idx));
+              const selected = selectedWeatherId === id;
+
+              return (
+                <PointAnnotation
+                  key={`weather-${id}-${selected ? 'sel' : 'def'}`}
+                  id={`weather-${id}`}
+                  coordinate={coords}
+                  onSelected={() => handleStationPress(feature)}
+                >
+                  <View
+                    style={{
+                      width: 24,
+                      height: 24,
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                    }}
+                  >
+                    <View
+                      style={[
+                        styles.weatherMarker,
+                        selected && styles.weatherMarkerSelected,
+                      ]}
+                    >
+                      <Ionicons name="partly-sunny" size={12} color="#FFFFFF" />
+                    </View>
+                  </View>
+                </PointAnnotation>
+              );
+            })}
 
         {(activeFilter === 'all' || activeFilter === 'resources') &&
           visibleResourcePointFeatures.map((feature) => {
             const coords = feature.geometry.coordinates as [number, number];
             const markerId = String(
               feature.properties?.id ??
-              feature.properties?.place_id ??
-              feature.properties?.OBJECTID ??
-              feature.properties?.ID ??
-              ''
+                feature.properties?.place_id ??
+                feature.properties?.OBJECTID ??
+                feature.properties?.ID ??
+                ''
             );
-            const selected = markerId === selectedPlaceId;
+            const selected = markerId === selectedResourceFeatureId;
             const resourceMarkerType = getResourceFeatureType(feature);
 
             return (
               <PointAnnotation
-                key={`resource-${markerId}`}
+                key={`resource-${markerId}-${selected ? 'sel' : 'def'}`}
                 id={`resource-${markerId}`}
                 coordinate={coords}
                 onSelected={() => handleResourcePress(feature)}
               >
                 <View
-                  style={[
-                    styles.resourceMarker,
-                    selected ? styles.resourceMarkerSelected : styles.resourceMarkerDefault,
-                  ]}
+                  style={{
+                    width: 22,
+                    height: 22,
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}
                 >
-                  <Ionicons
-                    name={getResourceMarkerIconName(resourceMarkerType)}
-                    size={16}
-                    color="#FFFFFF"
-                  />
+                  <View
+                    style={[
+                      styles.resourceMarker,
+                      selected
+                        ? styles.resourceMarkerSelected
+                        : styles.resourceMarkerDefault,
+                    ]}
+                  >
+                    <Ionicons
+                      name={getResourceMarkerIconName(resourceMarkerType)}
+                      size={11}
+                      color="#FFFFFF"
+                    />
+                  </View>
                 </View>
               </PointAnnotation>
             );
           })}
 
-        {selfReportsData && (
-          <ShapeSource
-            id="self-reports-data"
-            shape={selfReportsData}
-            onPress={(e) => handleFirePress(e.features[0])}
-          >
-            <CircleLayer
-              id="self-reports-layer"
-              style={{
-                circleColor: '#F59E0B',
-                circleRadius: 6,
-                circleOpacity: 0.95,
-                circleStrokeWidth: 2,
-                circleStrokeColor: '#FFFFFF',
-              }}
-            />
-          </ShapeSource>
-        )}
+        {selfReportsData &&
+          (selfReportsData.features ?? [])
+            .filter((f): f is GeoJSON.Feature<GeoJSON.Point> => f.geometry?.type === 'Point')
+            .map((feature, idx) => {
+              const coords = feature.geometry.coordinates as [number, number];
+              const id = getFeatureId(feature, String(idx));
+              const selected = selectedFireId === id;
+
+              return (
+                <PointAnnotation
+                  key={`selfreport-${id}-${selected ? 'sel' : 'def'}`}
+                  id={`selfreport-${id}`}
+                  coordinate={coords}
+                  onSelected={() => handleFirePress(feature)}
+                >
+                  <View
+                    style={{
+                      width: 24,
+                      height: 24,
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                    }}
+                  >
+                    <View
+                      style={[
+                        styles.selfReportMarker,
+                        selected && styles.selfReportMarkerSelected,
+                      ]}
+                    >
+                      <Ionicons name="warning" size={12} color="#FFFFFF" />
+                    </View>
+                  </View>
+                </PointAnnotation>
+              );
+            })}
       </MapView>
 
       {!mapReady && (
@@ -934,6 +1242,7 @@ const visibleResourcePointFeatures = useMemo<GeoJSON.Feature<GeoJSON.Point>[]>((
                 key={f.id}
                 style={[styles.chip, active && styles.chipActive]}
                 onPress={() => {
+                  clearSelections();
                   setActiveFilter(f.id);
                   if (f.id === 'resources') setSheetOpen(true);
                 }}
@@ -981,13 +1290,16 @@ const visibleResourcePointFeatures = useMemo<GeoJSON.Feature<GeoJSON.Point>[]>((
                   />
                 )}
 
-                {isResourceFilter && !resourcesLoading && !resourcesError && badgeCount > 0 && (
-                  <View style={[badgeStyle, active && badgeActiveStyle]}>
-                    <Text style={[badgeTextStyle, active && styles.badgeTextActive]}>
-                      {badgeCount}
-                    </Text>
-                  </View>
-                )}
+                {isResourceFilter &&
+                  !resourcesLoading &&
+                  !resourcesError &&
+                  badgeCount > 0 && (
+                    <View style={[badgeStyle, active && badgeActiveStyle]}>
+                      <Text style={[badgeTextStyle, active && styles.badgeTextActive]}>
+                        {badgeCount}
+                      </Text>
+                    </View>
+                  )}
 
                 {isResourceFilter && resourcesLoading && (
                   <ActivityIndicator
@@ -1036,7 +1348,10 @@ const visibleResourcePointFeatures = useMemo<GeoJSON.Feature<GeoJSON.Point>[]>((
           <View style={styles.popup} pointerEvents="box-none">
             <TouchableOpacity
               style={[styles.popupClose, { padding: 8, marginRight: -8, marginTop: -8 }]}
-              onPress={() => setSelectedData(null)}
+              onPress={() => {
+                setSelectedData(null);
+                setSelectedFireId(null);
+              }}
             >
               <Ionicons name="close" size={24} color="#374151" />
             </TouchableOpacity>
@@ -1045,11 +1360,11 @@ const visibleResourcePointFeatures = useMemo<GeoJSON.Feature<GeoJSON.Point>[]>((
               {selectedData.properties?.source === 'user'
                 ? 'User Fire Report'
                 : selectedData.properties?.prescribed_date_start
-                ? 'Prescribed Fire'
-                : selectedData.geometry?.type === 'Polygon' ||
-                  selectedData.geometry?.type === 'MultiPolygon'
-                ? 'Fire Perimeter'
-                : 'Satellite Hotspot'}
+                  ? 'Prescribed Fire'
+                  : selectedData.geometry?.type === 'Polygon' ||
+                      selectedData.geometry?.type === 'MultiPolygon'
+                    ? 'Fire Perimeter'
+                    : 'Satellite Hotspot'}
             </Text>
 
             <View style={styles.popupDivider} />
@@ -1112,11 +1427,12 @@ const visibleResourcePointFeatures = useMemo<GeoJSON.Feature<GeoJSON.Point>[]>((
               </Text>
             )}
 
-            {!!selectedData.properties?.description && selectedData.properties.source !== 'user' && (
-              <Text style={styles.popupDetail}>
-                📝 Description: {selectedData.properties.description}
-              </Text>
-            )}
+            {!!selectedData.properties?.description &&
+              selectedData.properties.source !== 'user' && (
+                <Text style={styles.popupDetail}>
+                  📝 Description: {selectedData.properties.description}
+                </Text>
+              )}
 
             {selectedData.properties?.area_acres && (
               <Text style={styles.popupDetail}>
@@ -1149,7 +1465,10 @@ const visibleResourcePointFeatures = useMemo<GeoJSON.Feature<GeoJSON.Point>[]>((
           <View style={styles.popup} pointerEvents="box-none">
             <TouchableOpacity
               style={[styles.popupClose, { padding: 8, marginRight: -8, marginTop: -8 }]}
-              onPress={() => setSelectedStation(null)}
+              onPress={() => {
+                setSelectedStation(null);
+                setSelectedWeatherId(null);
+              }}
             >
               <Ionicons name="close" size={24} color="#374151" />
             </TouchableOpacity>
@@ -1235,15 +1554,14 @@ const visibleResourcePointFeatures = useMemo<GeoJSON.Feature<GeoJSON.Point>[]>((
                     <ActivityIndicator size="small" color="#fff" />
                   ) : (
                     <Text style={styles.reportConfirmText}>Confirm</Text>
-                  )}</TouchableOpacity>
+                  )}
+                </TouchableOpacity>
               </View>
             </View>
           </View>
         </Modal>
       </SafeAreaView>
 
-
-      {/* Slider for resources */}
       <ResourceBottomSheet
         visible={sheetOpen}
         peekOnly={!!(selectedData || selectedStation)}
@@ -1371,7 +1689,7 @@ const styles = StyleSheet.create({
   },
 
   badgePrescribed: {
-    backgroundColor: '#DCFCE7',
+    backgroundColor: '#EDE9FE',
     borderRadius: 10,
     paddingHorizontal: 6,
     paddingVertical: 1,
@@ -1383,7 +1701,7 @@ const styles = StyleSheet.create({
   badgePrescribedText: {
     fontSize: 10,
     fontWeight: '700',
-    color: '#16A34A',
+    color: '#7C3AED',
   },
 
   badgeWeather: {
@@ -1532,10 +1850,11 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#FFFFFF',
   },
+
   resourceMarker: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
+    width: 22,
+    height: 22,
+    borderRadius: 11,
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 2,
@@ -1550,6 +1869,63 @@ const styles = StyleSheet.create({
     backgroundColor: '#10B981',
   },
   resourceMarkerSelected: {
-    backgroundColor: '#F58500',
+    backgroundColor: '#065F46',
+  },
+
+  prescribedMarker: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: '#7C3AED',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: '#FFFFFF',
+    shadowColor: '#000',
+    shadowOpacity: 0.18,
+    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 5,
+  },
+  prescribedMarkerSelected: {
+    backgroundColor: '#5B21B6',
+  },
+
+  weatherMarker: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: '#3B82F6',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: '#FFFFFF',
+    shadowColor: '#000',
+    shadowOpacity: 0.18,
+    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 5,
+  },
+  weatherMarkerSelected: {
+    backgroundColor: '#1D4ED8',
+  },
+
+  selfReportMarker: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: '#F59E0B',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: '#FFFFFF',
+    shadowColor: '#000',
+    shadowOpacity: 0.18,
+    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 5,
+  },
+  selfReportMarkerSelected: {
+    backgroundColor: '#B45309',
   },
 });
