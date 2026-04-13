@@ -5,7 +5,7 @@ import {
   signOut,
   UserCredential,
 } from 'firebase/auth';
-import { doc, setDoc, getDoc, serverTimestamp } from 'firebase/firestore';
+import { doc, setDoc, getDoc, updateDoc, query, where, getDocs, collection, serverTimestamp } from 'firebase/firestore';
 import { auth, db } from './firebaseConfig';
 
 interface UserProfile {
@@ -52,3 +52,23 @@ export const resetPassword = (email: string): Promise<void> =>
   sendPasswordResetEmail(auth, email);
 
 export const logOut = (): Promise<void> => signOut(auth);
+
+export const isFieldTaken = async (fieldName: string, value: string, currentUid: string) => {
+  const usersRef = collection(db, "users");
+  const q = query(usersRef, where(fieldName, "==", value));
+  const querySnapshot = await getDocs(q);
+  
+  const conflict = querySnapshot.docs.find(doc => doc.id !== currentUid);
+  return !!conflict; 
+};
+
+export const updateUserProfile = async (uid: string, data: any) => {
+  try {
+    const userRef = doc(db, "users", uid);
+    await updateDoc(userRef, data);
+    return { success: true };
+  } catch (error) {
+    console.error("Update Error:", error);
+    return { success: false, error };
+  }
+};
