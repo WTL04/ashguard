@@ -15,7 +15,7 @@ import Slider from "@react-native-community/slider";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-import { ResourceType, NearbyPlace } from "./resourceTypes";
+import { ResourceType, ResourceFilterType, NearbyPlace } from "./resourceTypes";
 
 type ResourceBottomSheetProps = {
   visible: boolean;
@@ -25,15 +25,17 @@ type ResourceBottomSheetProps = {
   places: NearbyPlace[];
   selectedPlaceId: string | null;
   distanceRadius: number;
-  resourceType: ResourceType;
+  resourceType: ResourceFilterType;  
   loading?: boolean;
-  onChangeResourceType: (type: ResourceType) => void;
+  onChangeResourceType: (type: ResourceFilterType) => void;
   onChangeDistanceRadius: (radius: number) => void;
   onSelectPlace: (place: NearbyPlace) => void;
   onClose?: () => void;
 };
 
 // ── Resource chip config ──────────────────────────────────────────────────────
+
+const ALL_CHIP = { type: "all" as ResourceFilterType, label: "All", icon: "apps-outline" as keyof typeof Ionicons.glyphMap };
 
 const RESOURCE_TYPES: { type: ResourceType; label: string; icon: keyof typeof Ionicons.glyphMap }[] = [
   { type: "hospital",    label: "Hospital",    icon: "medkit-outline" },
@@ -156,7 +158,7 @@ export default function ResourceBottomSheet({
           style={styles.chipScroll}
           contentContainerStyle={styles.chipRow}
         >
-          {RESOURCE_TYPES.map(({ type, label, icon }) => {
+          {[ALL_CHIP, ...RESOURCE_TYPES].map(({ type, label, icon }) => {
             const active = resourceType === type;
             return (
               <TouchableOpacity
@@ -165,15 +167,8 @@ export default function ResourceBottomSheet({
                 onPress={() => onChangeResourceType(type)}
                 activeOpacity={0.75}
               >
-                <Ionicons
-                  name={icon}
-                  size={14}
-                  color={active ? "#FFFFFF" : "#6B7280"}
-                  style={styles.chipIcon}
-                />
-                <Text style={[styles.chipLabel, active && styles.chipLabelActive]}>
-                  {label}
-                </Text>
+                <Ionicons name={icon} size={14} color={active ? "#FFFFFF" : "#6B7280"} style={styles.chipIcon} />
+                <Text style={[styles.chipLabel, active && styles.chipLabelActive]}>{label}</Text>
               </TouchableOpacity>
             );
           })}

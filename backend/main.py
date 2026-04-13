@@ -444,7 +444,7 @@ async def fetch_satellite_api(state: str | None = None) -> dict:
         else "Fetching global satellite fire data"
     )
 
-    day_range = 3
+    day_range = 1
     today = str(date.today())
 
     satellites = ["VIIRS_NOAA21_NRT", "LANDSAT_NRT", "MODIS_NRT"]
