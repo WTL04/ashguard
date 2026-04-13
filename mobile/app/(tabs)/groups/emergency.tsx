@@ -5,6 +5,9 @@ import {
   StyleSheet,
   TouchableOpacity,
   TextInput,
+  Linking,
+  Alert,
+  Platform,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
@@ -17,6 +20,12 @@ type SafetyStatus = 'SAFE' | 'NEED HELP!' | 'IN DANGER';
 const GROUP_NAME_KEY = 'emergency_group_name';
 const SAFETY_STATUS_KEY = 'emergency_group_safety_status';
 const MEETUP_ADDRESS_KEY = 'emergency_group_meetup_address';
+const MEETUP_COORDS_KEY = 'emergency_group_meetup_coords';
+
+type LatLng = {
+  latitude: number;
+  longitude: number;
+};
 
 export default function EmergencyGroupScreen() {
   const insets = useSafeAreaInsets();
@@ -25,6 +34,7 @@ export default function EmergencyGroupScreen() {
   const [isEditingName, setIsEditingName] = useState(false);
   const [selectedStatus, setSelectedStatus] = useState<SafetyStatus>('SAFE');
   const [meetupAddress, setMeetupAddress] = useState('');
+  const [meetupCoords, setMeetupCoords] = useState<LatLng | null>(null);
   const [isLoaded, setIsLoaded] = useState(false);
 
   useFocusEffect(
@@ -38,10 +48,9 @@ export default function EmergencyGroupScreen() {
       const savedGroupName = await AsyncStorage.getItem(GROUP_NAME_KEY);
       const savedStatus = await AsyncStorage.getItem(SAFETY_STATUS_KEY);
       const savedMeetupAddress = await AsyncStorage.getItem(MEETUP_ADDRESS_KEY);
+      const savedMeetupCoords = await AsyncStorage.getItem(MEETUP_COORDS_KEY);
 
-      if (savedGroupName) {
-        setGroupName(savedGroupName);
-      }
+      if (savedGroupName) setGroupName(savedGroupName);
 
       if (
         savedStatus === 'SAFE' ||
@@ -52,6 +61,10 @@ export default function EmergencyGroupScreen() {
       }
 
       setMeetupAddress(savedMeetupAddress || '');
+
+      if (savedMeetupCoords) {
+        setMeetupCoords(JSON.parse(savedMeetupCoords) as LatLng);
+      }
     } catch (error) {
       console.log('Error loading group data:', error);
     } finally {
@@ -77,7 +90,6 @@ export default function EmergencyGroupScreen() {
 
   const handleFinishEditingName = async () => {
     const trimmedName = groupName.trim();
-
     if (trimmedName.length === 0) {
       setGroupName('Name of Group');
       await saveGroupName('Name of Group');
@@ -85,7 +97,6 @@ export default function EmergencyGroupScreen() {
       setGroupName(trimmedName);
       await saveGroupName(trimmedName);
     }
-
     setIsEditingName(false);
   };
 
@@ -94,9 +105,58 @@ export default function EmergencyGroupScreen() {
     await saveSafetyStatus(status);
   };
 
+  // Opens the device's default map app with directions to the meetup location.
+  // On iOS: tries Apple Maps via maps.apple.com (works in all iOS apps).
+  // On Android: uses a geo: intent which the OS routes to whatever maps app
+  // the user has set as default (Google Maps, Waze, etc.).
+  const handleNavigate = () => {
+    if (!meetupCoords && !meetupAddress) {
+      Alert.alert('No meetup location', 'Set a meetup location first.');
+      return;
+    }
+
+    let url: string;
+
+    if (meetupCoords) {
+      const { latitude, longitude } = meetupCoords;
+      const label = encodeURIComponent(meetupAddress || 'Emergency Meetup');
+
+      if (Platform.OS === 'ios') {
+        // Apple Maps deeplink — works on all iOS devices without any app installed
+        url = `maps://maps.apple.com/?daddr=${latitude},${longitude}&q=${label}`;
+      } else {
+        // geo: intent — Android routes this to the user's default maps app
+        url = `geo:${latitude},${longitude}?q=${latitude},${longitude}(${label})`;
+      }
+    } else {
+      // Fallback: just search by address text
+      const encoded = encodeURIComponent(meetupAddress);
+      if (Platform.OS === 'ios') {
+        url = `maps://maps.apple.com/?q=${encoded}`;
+      } else {
+        url = `geo:0,0?q=${encoded}`;
+      }
+    }
+
+    Linking.canOpenURL(url)
+      .then((supported) => {
+        if (supported) {
+          return Linking.openURL(url);
+        }
+        // Fallback to Google Maps web if the native scheme isn't supported
+        const fallback = meetupCoords
+          ? `https://www.google.com/maps/dir/?api=1&destination=${meetupCoords.latitude},${meetupCoords.longitude}`
+          : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(meetupAddress)}`;
+        return Linking.openURL(fallback);
+      })
+      .catch((err) => {
+        console.log('Error opening maps:', err);
+        Alert.alert('Error', 'Could not open maps app.');
+      });
+  };
+
   const getStatusStyle = (status: SafetyStatus) => {
     const isSelected = selectedStatus === status;
-
     if (status === 'SAFE') {
       return {
         backgroundColor: isSelected ? '#57C61A' : '#EAF8DF',
@@ -104,7 +164,6 @@ export default function EmergencyGroupScreen() {
         textColor: isSelected ? '#FFFFFF' : '#2F8F12',
       };
     }
-
     if (status === 'NEED HELP!') {
       return {
         backgroundColor: isSelected ? '#FFB300' : '#FFF4D6',
@@ -112,7 +171,6 @@ export default function EmergencyGroupScreen() {
         textColor: isSelected ? '#FFFFFF' : '#B57600',
       };
     }
-
     return {
       backgroundColor: isSelected ? '#F15A3B' : '#FFE2DC',
       borderColor: '#F15A3B',
@@ -135,10 +193,7 @@ export default function EmergencyGroupScreen() {
       <SafeAreaView style={styles.container} edges={['bottom']}>
         <View style={styles.screen}>
           <View style={[styles.header, { paddingTop: insets.top + 10 }]}>
-            <TouchableOpacity
-              onPress={() => router.back()}
-              style={styles.backButton}
-            >
+            <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
               <Ionicons name="chevron-back" size={26} color="#fff" />
             </TouchableOpacity>
 
@@ -161,14 +216,8 @@ export default function EmergencyGroupScreen() {
                 />
               ) : (
                 <>
-                  <Text style={styles.headerTitle} numberOfLines={1}>
-                    {groupName}
-                  </Text>
-
-                  <TouchableOpacity
-                    onPress={() => setIsEditingName(true)}
-                    style={styles.headerPencil}
-                  >
+                  <Text style={styles.headerTitle} numberOfLines={1}>{groupName}</Text>
+                  <TouchableOpacity onPress={() => setIsEditingName(true)} style={styles.headerPencil}>
                     <Ionicons name="pencil" size={16} color="#111" />
                   </TouchableOpacity>
                 </>
@@ -177,6 +226,7 @@ export default function EmergencyGroupScreen() {
           </View>
 
           <View style={styles.content}>
+            {/* Contact Members card */}
             <TouchableOpacity
               style={styles.card}
               activeOpacity={0.9}
@@ -187,15 +237,14 @@ export default function EmergencyGroupScreen() {
                   <Ionicons name="people-outline" size={24} color="#fff" />
                   <Text style={styles.cardHeaderText}>Contact members</Text>
                 </View>
-
                 <Ionicons name="chevron-forward" size={24} color="#fff" />
               </View>
-
               <Text style={styles.cardBodyText}>
                 Add new members to your group or view current members.
               </Text>
             </TouchableOpacity>
 
+            {/* Location & Meetup card */}
             <TouchableOpacity
               style={styles.card}
               activeOpacity={0.9}
@@ -206,19 +255,28 @@ export default function EmergencyGroupScreen() {
                   <Ionicons name="location-outline" size={24} color="#fff" />
                   <Text style={styles.cardHeaderText}>Location & Meetup</Text>
                 </View>
-
                 <Ionicons name="chevron-forward" size={24} color="#fff" />
               </View>
 
               {meetupAddress ? (
                 <View style={styles.meetupContent}>
+                  {/* Address row */}
                   <View style={styles.meetupSavedRow}>
                     <Text style={styles.meetupSavedText} numberOfLines={1}>
                       {meetupAddress}
                     </Text>
-
                     <Ionicons name="create-outline" size={18} color="#F58500" />
                   </View>
+
+                  {/* Navigate button */}
+                  <TouchableOpacity
+                    style={styles.navigateButton}
+                    activeOpacity={0.85}
+                    onPress={handleNavigate}
+                  >
+                    <Ionicons name="navigate" size={16} color="#fff" style={{ marginRight: 6 }} />
+                    <Text style={styles.navigateButtonText}>NAVIGATE</Text>
+                  </TouchableOpacity>
                 </View>
               ) : (
                 <Text style={styles.cardBodyText}>
@@ -228,6 +286,7 @@ export default function EmergencyGroupScreen() {
               )}
             </TouchableOpacity>
 
+            {/* Check In card */}
             <View style={styles.card}>
               <View style={styles.cardHeader}>
                 <View style={styles.cardHeaderLeft}>
@@ -240,50 +299,37 @@ export default function EmergencyGroupScreen() {
                 <Text style={styles.statusLabel}>SAFETY STATUS</Text>
 
                 <View style={styles.statusGrid}>
-                  {(['SAFE', 'NEED HELP!', 'IN DANGER'] as SafetyStatus[]).map(
-                    (status) => {
-                      const style = getStatusStyle(status);
-                      const isSelected = selectedStatus === status;
-
-                      return (
-                        <TouchableOpacity
-                          key={status}
-                          activeOpacity={0.9}
-                          onPress={() => handleSelectStatus(status)}
-                          style={[
-                            styles.statusBox,
-                            {
-                              backgroundColor: style.backgroundColor,
-                              borderColor: style.borderColor,
-                            },
-                          ]}
-                        >
-                          <Text
-                            style={[
-                              styles.statusBoxText,
-                              { color: style.textColor },
-                            ]}
-                          >
-                            {status}
-                          </Text>
-
-                          {isSelected && (
-                            <Ionicons
-                              name="checkmark-circle"
-                              size={18}
-                              color={style.textColor}
-                              style={styles.statusCheck}
-                            />
-                          )}
-                        </TouchableOpacity>
-                      );
-                    }
-                  )}
+                  {(['SAFE', 'NEED HELP!', 'IN DANGER'] as SafetyStatus[]).map((status) => {
+                    const style = getStatusStyle(status);
+                    const isSelected = selectedStatus === status;
+                    return (
+                      <TouchableOpacity
+                        key={status}
+                        activeOpacity={0.9}
+                        onPress={() => handleSelectStatus(status)}
+                        style={[
+                          styles.statusBox,
+                          { backgroundColor: style.backgroundColor, borderColor: style.borderColor },
+                        ]}
+                      >
+                        <Text style={[styles.statusBoxText, { color: style.textColor }]}>
+                          {status}
+                        </Text>
+                        {isSelected && (
+                          <Ionicons
+                            name="checkmark-circle"
+                            size={18}
+                            color={style.textColor}
+                            style={styles.statusCheck}
+                          />
+                        )}
+                      </TouchableOpacity>
+                    );
+                  })}
                 </View>
 
                 <Text style={styles.cardBodyTextNoPad}>
-                  Update your group in case of possible life threatening
-                  situations nearby.
+                  Update your group in case of possible life threatening situations nearby.
                 </Text>
               </View>
             </View>
@@ -393,6 +439,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingTop: 12,
     paddingBottom: 14,
+    gap: 10,
   },
   meetupSavedRow: {
     minHeight: 42,
@@ -413,6 +460,23 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     textAlign: 'center',
   },
+  // Navigate button — solid orange, full width, pill shape
+  navigateButton: {
+  flexDirection: 'row',
+  alignItems: 'center',
+  justifyContent: 'center',
+  backgroundColor: '#F58500',
+  borderRadius: 24,
+  paddingVertical: 10,
+  paddingHorizontal: 32,
+  alignSelf: 'center',
+},
+navigateButtonText: {
+  color: '#fff',
+  fontWeight: '800',
+  fontSize: 14,
+  letterSpacing: 0.5,
+},
   checkInBody: {
     paddingHorizontal: 16,
     paddingTop: 16,

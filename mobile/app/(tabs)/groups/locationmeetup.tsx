@@ -68,8 +68,16 @@ type PlaceholderMember = {
 const FALLBACK_COORDS: [number, number] = [-122.4194, 37.7749];
 const DEFAULT_ZOOM = 12;
 
+// The visible content of the panel is 290px tall.
+// We add 200px of overhang below the screen so there is never a grey gap —
+// the panel background extends well past the bottom edge.
+const PANEL_VISIBLE_HEIGHT = 290;
+const PANEL_OVERHANG = 200;
+const PANEL_TOTAL_HEIGHT = PANEL_VISIBLE_HEIGHT + PANEL_OVERHANG;
+
+// When collapsed we slide down so only ~68px (drag handle + start of title) peeks.
 const SHEET_EXPANDED = 0;
-const SHEET_COLLAPSED = 230;
+const SHEET_COLLAPSED = PANEL_VISIBLE_HEIGHT - 68;
 
 function buildPhotonLabel(feature: PhotonFeature) {
   const p = feature.properties ?? {};
@@ -83,28 +91,19 @@ function buildPlaceholderMembers(center: LatLng): PlaceholderMember[] {
     {
       id: '1',
       name: 'Member 1',
-      coordinate: {
-        latitude: center.latitude + 0.004,
-        longitude: center.longitude - 0.003,
-      },
+      coordinate: { latitude: center.latitude + 0.004, longitude: center.longitude - 0.003 },
       avatar: 'https://via.placeholder.com/48/8ec5ff',
     },
     {
       id: '2',
       name: 'Member 2',
-      coordinate: {
-        latitude: center.latitude - 0.005,
-        longitude: center.longitude - 0.006,
-      },
+      coordinate: { latitude: center.latitude - 0.005, longitude: center.longitude - 0.006 },
       avatar: 'https://via.placeholder.com/48/ffd36e',
     },
     {
       id: '3',
       name: 'Member 3',
-      coordinate: {
-        latitude: center.latitude - 0.007,
-        longitude: center.longitude + 0.004,
-      },
+      coordinate: { latitude: center.latitude - 0.007, longitude: center.longitude + 0.004 },
       avatar: 'https://via.placeholder.com/48/ff9f7a',
     },
   ];
@@ -125,10 +124,7 @@ export default function LocationMeetupScreen() {
   
   const [groupName, setGroupName] = useState('Name of Group');
   const [memberPins, setMemberPins] = useState<PlaceholderMember[]>(
-    buildPlaceholderMembers({
-      latitude: FALLBACK_COORDS[1],
-      longitude: FALLBACK_COORDS[0],
-    })
+    buildPlaceholderMembers({ latitude: FALLBACK_COORDS[1], longitude: FALLBACK_COORDS[0] })
   );
 
   const [locationGranted, setLocationGranted] = useState(false);
@@ -146,6 +142,11 @@ export default function LocationMeetupScreen() {
   const sheetTranslateY = useRef(new Animated.Value(SHEET_EXPANDED)).current;
   const lastSheetTranslateY = useRef(SHEET_EXPANDED);
 
+  // Floating buttons track above the sheet as it moves
+  const floatingButtonsBottom = useRef(
+    new Animated.Value(PANEL_VISIBLE_HEIGHT + 16)
+  ).current;
+
   useFocusEffect(
     React.useCallback(() => {
       loadSavedData();
@@ -153,18 +154,22 @@ export default function LocationMeetupScreen() {
   );
 
   useEffect(() => {
-    if (!mapReady || !userCoords || hasCenteredOnUserRef.current || !cameraRef.current) {
-      return;
-    }
-
+    if (!mapReady || !userCoords || hasCenteredOnUserRef.current || !cameraRef.current) return;
     hasCenteredOnUserRef.current = true;
-
     cameraRef.current.setCamera({
       centerCoordinate: userCoords,
       zoomLevel: 14,
       animationDuration: 0,
     });
   }, [mapReady, userCoords]);
+
+  // Keep floating buttons above the sheet
+  useEffect(() => {
+    const id = sheetTranslateY.addListener(({ value }) => {
+      floatingButtonsBottom.setValue(PANEL_VISIBLE_HEIGHT - value + 16);
+    });
+    return () => sheetTranslateY.removeListener(id);
+  }, []);
 
   const panResponder = useRef(
     PanResponder.create({
@@ -176,10 +181,8 @@ export default function LocationMeetupScreen() {
       },
       onPanResponderMove: (_, gesture) => {
         let nextValue = lastSheetTranslateY.current + gesture.dy;
-
         if (nextValue < SHEET_EXPANDED) nextValue = SHEET_EXPANDED;
         if (nextValue > SHEET_COLLAPSED) nextValue = SHEET_COLLAPSED;
-
         sheetTranslateY.setValue(nextValue);
       },
       onPanResponderRelease: (_, gesture) => {
@@ -195,7 +198,6 @@ export default function LocationMeetupScreen() {
               value < (SHEET_COLLAPSED - SHEET_EXPANDED) / 2
                 ? SHEET_EXPANDED
                 : SHEET_COLLAPSED;
-
             Animated.spring(sheetTranslateY, {
               toValue: finalValue,
               useNativeDriver: true,
@@ -262,9 +264,8 @@ export default function LocationMeetupScreen() {
   };
 
   const animateTo = (coords: LatLng, zoom = 14) => {
-    const mapCoords: [number, number] = [coords.longitude, coords.latitude];
     cameraRef.current?.setCamera({
-      centerCoordinate: mapCoords,
+      centerCoordinate: [coords.longitude, coords.latitude],
       zoomLevel: zoom,
       animationDuration: 600,
     });
@@ -273,14 +274,8 @@ export default function LocationMeetupScreen() {
   const handleUserLocationUpdate = (location: any) => {
     const coords = location?.coords;
     if (!coords) return;
-
-    const nextLocation: LatLng = {
-      latitude: coords.latitude,
-      longitude: coords.longitude,
-    };
-
+    const nextLocation: LatLng = { latitude: coords.latitude, longitude: coords.longitude };
     const nextCoords: [number, number] = [coords.longitude, coords.latitude];
-
     setUserLocation(nextLocation);
     setUserCoords(nextCoords);
     setLocationGranted(true);
@@ -290,47 +285,33 @@ export default function LocationMeetupScreen() {
   const handleMapPress = async (e: any) => {
     const coords = e.geometry?.coordinates ?? e.nativeEvent?.geometry?.coordinates;
     if (!coords || coords.length < 2) return;
-
     const lng = coords[0];
     const lat = coords[1];
-    const fallbackAddress = `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
-
-    await saveMeetup(fallbackAddress, { latitude: lat, longitude: lng });
+    await saveMeetup(`${lat.toFixed(5)}, ${lng.toFixed(5)}`, { latitude: lat, longitude: lng });
     animateTo({ latitude: lat, longitude: lng });
   };
 
   const fetchPhotonSuggestions = async (input: string) => {
     setSearchText(input);
-
-    if (!input.trim()) {
-      setSuggestions([]);
-      return;
-    }
+    if (!input.trim()) { setSuggestions([]); return; }
 
     try {
       setLoadingSuggestions(true);
-
       const searchCenter = userCoords ?? FALLBACK_COORDS;
-
       const url =
         `https://photon.komoot.io/api/?q=${encodeURIComponent(input)}` +
         `&limit=6&lat=${searchCenter[1]}&lon=${searchCenter[0]}`;
-
       const response = await fetch(url);
       const data = await response.json();
 
       const nextSuggestions: AddressSuggestion[] = (data?.features ?? [])
         .map((feature: PhotonFeature, index: number) => {
-          const coords = feature.geometry?.coordinates;
-          if (!coords || coords.length < 2) return null;
-
+          const c = feature.geometry?.coordinates;
+          if (!c || c.length < 2) return null;
           return {
-            id: `${coords[0]}_${coords[1]}_${index}`,
+            id: `${c[0]}_${c[1]}_${index}`,
             label: buildPhotonLabel(feature),
-            coords: {
-              latitude: coords[1],
-              longitude: coords[0],
-            },
+            coords: { latitude: c[1], longitude: c[0] },
           };
         })
         .filter(Boolean) as AddressSuggestion[];
@@ -354,24 +335,17 @@ export default function LocationMeetupScreen() {
 
   const handleSaveCurrentMeetup = async () => {
     if (!meetupCoords) {
-      Alert.alert(
-        'No meetup selected',
-        'Drop a pin on the map or search for an address first.'
-      );
+      Alert.alert('No meetup selected', 'Drop a pin on the map or search for an address first.');
       return;
     }
-
     try {
       const address =
         meetupAddress ||
         `${meetupCoords.latitude.toFixed(5)}, ${meetupCoords.longitude.toFixed(5)}`;
-
       await AsyncStorage.setItem(MEETUP_ADDRESS_KEY, address);
       await AsyncStorage.setItem(MEETUP_COORDS_KEY, JSON.stringify(meetupCoords));
-
       setMeetupAddress(address);
       setMeetupCoords(meetupCoords);
-
       router.back();
     } catch (error) {
       console.log('Error saving meetup before exit:', error);
@@ -385,7 +359,6 @@ export default function LocationMeetupScreen() {
         const address =
           meetupAddress ||
           `${meetupCoords.latitude.toFixed(5)}, ${meetupCoords.longitude.toFixed(5)}`;
-
         await AsyncStorage.setItem(MEETUP_ADDRESS_KEY, address);
         await AsyncStorage.setItem(MEETUP_COORDS_KEY, JSON.stringify(meetupCoords));
       }
@@ -397,20 +370,12 @@ export default function LocationMeetupScreen() {
   };
 
   const handleSnapToMeetupPin = () => {
-    if (!meetupCoords) {
-      Alert.alert('No meetup pin', 'Set a meetup location first.');
-      return;
-    }
-
+    if (!meetupCoords) { Alert.alert('No meetup pin', 'Set a meetup location first.'); return; }
     animateTo(meetupCoords, 14);
   };
 
   const handleSnapToUserLocation = () => {
-    if (!userLocation) {
-      Alert.alert('Location unavailable', 'Waiting for your live location.');
-      return;
-    }
-
+    if (!userLocation) { Alert.alert('Location unavailable', 'Waiting for your live location.'); return; }
     animateTo(userLocation, 14);
   };
 
@@ -418,36 +383,23 @@ export default function LocationMeetupScreen() {
     type: 'FeatureCollection',
     features: memberPins.map((member) => ({
       type: 'Feature',
-      properties: {
-        id: member.id,
-        name: member.name,
-        avatar: member.avatar,
-      },
-      geometry: {
-        type: 'Point',
-        coordinates: latLngToCoords(member.coordinate),
-      },
+      properties: { id: member.id, name: member.name, avatar: member.avatar },
+      geometry: { type: 'Point', coordinates: latLngToCoords(member.coordinate) },
     })),
   };
 
   const meetupGeoJSON: GeoJSON.FeatureCollection = meetupCoords
     ? {
         type: 'FeatureCollection',
-        features: [
-          {
-            type: 'Feature',
-            properties: {},
-            geometry: {
-              type: 'Point',
-              coordinates: latLngToCoords(meetupCoords),
-            },
-          },
-        ],
+        features: [{
+          type: 'Feature',
+          properties: {},
+          geometry: { type: 'Point', coordinates: latLngToCoords(meetupCoords) },
+        }],
       }
     : { type: 'FeatureCollection', features: [] };
 
   const map_light_mode = 'https://basemaps.cartocdn.com/gl/voyager-gl-style/style.json';
-
   const meetupSourceKey = meetupCoords
     ? `meetup-pin-${meetupCoords.latitude}-${meetupCoords.longitude}-${mapLoadCount}`
     : `meetup-pin-empty-${mapLoadCount}`;
@@ -456,17 +408,15 @@ export default function LocationMeetupScreen() {
     <>
       <StatusBar style="light" backgroundColor="#F58500" />
 
+      {/* Match panel color so any background bleed is invisible */}
       <SafeAreaView style={styles.container} edges={['bottom']}>
         <View style={styles.screen}>
           <View style={[styles.header, { paddingTop: insets.top + 10 }]}>
             <TouchableOpacity onPress={handleBackPress} style={styles.backButton}>
               <Ionicons name="chevron-back" size={26} color="#fff" />
             </TouchableOpacity>
-
             <View style={styles.headerTitleWrap}>
-              <Text style={styles.headerTitle} numberOfLines={1}>
-                {groupName}
-              </Text>
+              <Text style={styles.headerTitle} numberOfLines={1}>{groupName}</Text>
               <Ionicons name="pencil" size={16} color="#111" />
             </View>
           </View>
@@ -490,12 +440,8 @@ export default function LocationMeetupScreen() {
               >
                 <Camera
                   ref={cameraRef}
-                  defaultSettings={{
-                    centerCoordinate: FALLBACK_COORDS,
-                    zoomLevel: DEFAULT_ZOOM,
-                  }}
+                  defaultSettings={{ centerCoordinate: FALLBACK_COORDS, zoomLevel: DEFAULT_ZOOM }}
                 />
-
                 {locationGranted && (
                   <UserLocation
                     visible={true}
@@ -504,7 +450,6 @@ export default function LocationMeetupScreen() {
                     androidRenderMode="normal"
                   />
                 )}
-
                 <ShapeSource id="member-pins" shape={membersGeoJSON}>
                   <CircleLayer
                     id="member-pins-layer"
@@ -516,12 +461,7 @@ export default function LocationMeetupScreen() {
                     }}
                   />
                 </ShapeSource>
-
-                <ShapeSource
-                  key={meetupSourceKey}
-                  id="meetup-pin"
-                  shape={meetupGeoJSON}
-                >
+                <ShapeSource key={meetupSourceKey} id="meetup-pin" shape={meetupGeoJSON}>
                   <CircleLayer
                     id="meetup-pin-layer"
                     style={{
@@ -535,11 +475,9 @@ export default function LocationMeetupScreen() {
               </MapView>
             )}
 
+            {/* Floating buttons — animated to always sit above the sheet */}
             <Animated.View
-              style={[
-                styles.floatingButtonsWrap,
-                { transform: [{ translateY: sheetTranslateY }] },
-              ]}
+              style={[styles.floatingButtonsWrap, { bottom: floatingButtonsBottom }]}
             >
               <TouchableOpacity
                 style={[styles.floatingButton, styles.myLocationButton]}
@@ -547,7 +485,6 @@ export default function LocationMeetupScreen() {
               >
                 <Ionicons name="locate" size={20} color="#fff" />
               </TouchableOpacity>
-
               <TouchableOpacity
                 style={[styles.floatingButton, styles.meetupPinButton]}
                 onPress={handleSnapToMeetupPin}
@@ -556,47 +493,63 @@ export default function LocationMeetupScreen() {
               </TouchableOpacity>
             </Animated.View>
 
+            {/* Search card with tap-outside-to-close backdrop */}
             {showSearchCard && (
-              <View style={styles.searchModal}>
-                <Text style={styles.searchLabel}>Search Address:</Text>
-
-                <TextInput
-                  value={searchText}
-                  onChangeText={fetchPhotonSuggestions}
-                  style={styles.searchField}
-                  placeholder="Enter address"
-                  placeholderTextColor="#777"
-                />
-
-                <FlatList
-                  data={suggestions}
-                  keyExtractor={(item) => item.id}
-                  keyboardShouldPersistTaps="handled"
-                  style={styles.suggestionList}
-                  renderItem={({ item }) => (
-                    <TouchableOpacity
-                      style={styles.suggestionRow}
-                      onPress={() => handleSelectSuggestion(item)}
-                    >
-                      <Text style={styles.suggestionText}>{item.label}</Text>
-                    </TouchableOpacity>
-                  )}
-                  ListEmptyComponent={
-                    searchText.trim() && !loadingSuggestions ? (
-                      <Text style={styles.noResultsText}>No matching addresses found</Text>
-                    ) : null
-                  }
-                />
-
+              <>
                 <TouchableOpacity
-                  style={styles.saveAddressButton}
-                  onPress={handleSaveCurrentMeetup}
-                >
-                  <Text style={styles.saveAddressButtonText}>SAVE ADDRESS</Text>
-                </TouchableOpacity>
-              </View>
+                  style={StyleSheet.absoluteFill}
+                  activeOpacity={1}
+                  onPress={() => setShowSearchCard(false)}
+                />
+                <View style={styles.searchModal}>
+                  <View style={styles.searchModalHeader}>
+                    <Ionicons name="search" size={20} color="#F58500" style={{ marginRight: 8 }} />
+                    <Text style={styles.searchLabel}>Search Address</Text>
+                  </View>
+                  <TextInput
+                    value={searchText}
+                    onChangeText={fetchPhotonSuggestions}
+                    style={styles.searchField}
+                    placeholder="Enter address..."
+                    placeholderTextColor="#BBAA99"
+                    autoFocus
+                  />
+                  <FlatList
+                    data={suggestions}
+                    keyExtractor={(item) => item.id}
+                    keyboardShouldPersistTaps="handled"
+                    style={styles.suggestionList}
+                    renderItem={({ item }) => (
+                      <TouchableOpacity
+                        style={styles.suggestionRow}
+                        onPress={() => handleSelectSuggestion(item)}
+                      >
+                        <Ionicons
+                          name="location-outline"
+                          size={16}
+                          color="#F58500"
+                          style={{ marginRight: 10 }}
+                        />
+                        <Text style={styles.suggestionText}>{item.label}</Text>
+                      </TouchableOpacity>
+                    )}
+                    ListEmptyComponent={
+                      searchText.trim() && !loadingSuggestions ? (
+                        <Text style={styles.noResultsText}>No matching addresses found</Text>
+                      ) : null
+                    }
+                  />
+                  <TouchableOpacity style={styles.saveAddressButton} onPress={handleSaveCurrentMeetup}>
+                    <Ionicons name="checkmark-circle-outline" size={18} color="#fff" style={{ marginRight: 6 }} />
+                    <Text style={styles.saveAddressButtonText}>SAVE ADDRESS</Text>
+                  </TouchableOpacity>
+                </View>
+              </>
             )}
 
+            {/* Bottom sheet
+                bottom: -PANEL_OVERHANG means the panel's bottom edge sits 200px
+                below the screen — the background color extends there, so no gap. */}
             <Animated.View
               style={[
                 styles.bottomPanel,
@@ -606,22 +559,16 @@ export default function LocationMeetupScreen() {
               <View {...panResponder.panHandlers} style={styles.dragArea}>
                 <View style={styles.dragHandle} />
               </View>
-
               <Text style={styles.panelTitle}>Set Emergency Meetup Location</Text>
               <Text style={styles.panelSubtitle}>Drop a pin on the map</Text>
               <Text style={styles.panelOr}>--- OR ---</Text>
-
               <TouchableOpacity
                 style={styles.secondaryButton}
                 onPress={() => setShowSearchCard((prev) => !prev)}
               >
                 <Text style={styles.secondaryButtonText}>SEARCH BY ADDRESS</Text>
               </TouchableOpacity>
-
-              <TouchableOpacity
-                style={styles.primaryButton}
-                onPress={handleSaveCurrentMeetup}
-              >
+              <TouchableOpacity style={styles.primaryButton} onPress={handleSaveCurrentMeetup}>
                 <Text style={styles.primaryButtonText}>SAVE</Text>
               </TouchableOpacity>
             </Animated.View>
@@ -635,7 +582,7 @@ export default function LocationMeetupScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#F3F3F3',
+    backgroundColor: '#F7F7F7', // matches panel — any bleed is invisible
   },
   screen: {
     flex: 1,
@@ -678,12 +625,11 @@ const styles = StyleSheet.create({
     ...StyleSheet.absoluteFillObject,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#F3F3F3',
+    backgroundColor: '#F7F7F7',
   },
   floatingButtonsWrap: {
     position: 'absolute',
     right: 16,
-    bottom: 308,
     alignItems: 'center',
   },
   floatingButton: {
@@ -707,14 +653,14 @@ const styles = StyleSheet.create({
     position: 'absolute',
     left: 0,
     right: 0,
-    bottom: 0,
+    bottom: -PANEL_OVERHANG, // extends 200px below screen — no gap possible
     backgroundColor: '#F7F7F7',
     borderTopLeftRadius: 28,
     borderTopRightRadius: 28,
     paddingHorizontal: 22,
     paddingTop: 8,
     paddingBottom: 22,
-    height: 290,
+    height: PANEL_TOTAL_HEIGHT,
     shadowColor: '#000',
     shadowOpacity: 0.16,
     shadowRadius: 8,
@@ -788,34 +734,42 @@ const styles = StyleSheet.create({
   },
   searchModal: {
     position: 'absolute',
-    left: 18,
-    right: 18,
-    top: 110,
+    left: 16,
+    right: 16,
+    top: 90,
     backgroundColor: '#fff',
-    borderRadius: 18,
-    padding: 16,
-    shadowColor: '#000',
-    shadowOpacity: 0.18,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 3 },
-    elevation: 8,
-    maxHeight: 320,
+    borderRadius: 24,
+    padding: 20,
+    shadowColor: '#F58500',
+    shadowOpacity: 0.22,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 12,
+    maxHeight: 340,
+    borderWidth: 1.5,
+    borderColor: '#FFE0B2',
+  },
+  searchModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 14,
   },
   searchLabel: {
-    fontSize: 20,
-    fontWeight: '700',
-    color: '#222',
-    textAlign: 'center',
-    marginBottom: 10,
+    fontSize: 18,
+    fontWeight: '800',
+    color: '#F58500',
+    letterSpacing: 0.3,
   },
   searchField: {
-    height: 44,
-    borderWidth: 1,
-    borderColor: '#999',
-    backgroundColor: '#EFE7D9',
-    paddingHorizontal: 12,
-    borderRadius: 4,
+    height: 48,
+    borderWidth: 1.5,
+    borderColor: '#FFD0A0',
+    backgroundColor: '#FFF8F0',
+    paddingHorizontal: 18,
+    borderRadius: 24,
     fontSize: 15,
+    color: '#222',
     marginBottom: 10,
   },
   suggestionList: {
@@ -824,12 +778,16 @@ const styles = StyleSheet.create({
   },
   suggestionRow: {
     paddingVertical: 12,
+    paddingHorizontal: 4,
     borderBottomWidth: 1,
-    borderBottomColor: '#DDD',
+    borderBottomColor: '#FFE8CC',
+    flexDirection: 'row',
+    alignItems: 'center',
   },
   suggestionText: {
     fontSize: 14,
-    color: '#222',
+    color: '#333',
+    flex: 1,
   },
   noResultsText: {
     fontSize: 14,
@@ -838,15 +796,22 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
   },
   saveAddressButton: {
-    height: 44,
-    borderRadius: 22,
+    height: 48,
+    borderRadius: 24,
     backgroundColor: '#F58500',
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
+    shadowColor: '#F58500',
+    shadowOpacity: 0.35,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 3 },
+    elevation: 5,
   },
   saveAddressButtonText: {
     color: '#fff',
     fontSize: 15,
-    fontWeight: '700',
+    fontWeight: '800',
+    letterSpacing: 0.5,
   },
 });
