@@ -26,7 +26,7 @@ export default function SettingsScreen() {
           <Text style={styles.name}>First Name Last Name</Text>
           <Text style={styles.phone}>(XXX) XXX - XXXX</Text>
 
-          <Pressable style={styles.editButton}>
+          <Pressable onPress={ () => router.push("/(tabs)/settings/editprofile") } style={styles.editButton}>
             <Text style={styles.editText}>Edit Profile</Text>
           </Pressable>
         </View>
