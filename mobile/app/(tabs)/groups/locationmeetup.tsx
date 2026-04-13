@@ -121,7 +121,7 @@ export default function LocationMeetupScreen() {
   const [mapReady, setMapReady] = useState(false);
   const [mapLoadCount, setMapLoadCount] = useState(0);
   const [locationResolved, setLocationResolved] = useState(false);
-
+  
   const [groupName, setGroupName] = useState('Name of Group');
   const [memberPins, setMemberPins] = useState<PlaceholderMember[]>(
     buildPlaceholderMembers({ latitude: FALLBACK_COORDS[1], longitude: FALLBACK_COORDS[0] })
@@ -443,7 +443,12 @@ export default function LocationMeetupScreen() {
                   defaultSettings={{ centerCoordinate: FALLBACK_COORDS, zoomLevel: DEFAULT_ZOOM }}
                 />
                 {locationGranted && (
-                  <UserLocation visible={true} onUpdate={handleUserLocationUpdate} />
+                  <UserLocation
+                    visible={true}
+                    onUpdate={handleUserLocationUpdate}
+                    renderMode="native"
+                    androidRenderMode="normal"
+                  />
                 )}
                 <ShapeSource id="member-pins" shape={membersGeoJSON}>
                   <CircleLayer

@@ -179,9 +179,11 @@ function ThreadCard({
             <Text style={styles.officialTagText}>OFFICIAL</Text>
           </View>
         )}
-        {isOfficial && thread.title && (
-          <Text style={styles.threadTitle}>{thread.title}</Text>
-        )}
+        {thread.title ? (
+          <Text style={isOfficial ? styles.threadTitle : styles.threadTitleRegular}>
+            {thread.title}
+          </Text>
+        ) : null}
         <View style={styles.authorRow}>
           <Avatar
             username={thread.authorUsername}
@@ -273,11 +275,26 @@ function ThreadCard({
 
 // ── Main screen ───────────────────────────────────────────────────────────────
 
+// ── Filter config ─────────────────────────────────────────────────────────────
+
+type FilterOption = 'all' | 'pinned' | 'Wildfire' | 'Question' | 'Resources' | 'Self Report' | 'Update';
+
+const FILTER_TABS: { key: FilterOption; label: string }[] = [
+  { key: 'all',         label: 'All' },
+  { key: 'pinned',      label: 'Official' },
+  { key: 'Wildfire',    label: 'Wildfire' },
+  { key: 'Question',    label: 'Question' },
+  { key: 'Resources',   label: 'Resources' },
+  { key: 'Self Report', label: 'Self Report' },
+  { key: 'Update',      label: 'Update' },
+];
+
 export default function ForumScreen() {
   const router = useRouter();
   const [user] = useAuthState(auth);
   const [threads, setThreads] = useState<ForumThread[]>([]);
   const [loading, setLoading] = useState(true);
+  const [activeFilter, setActiveFilter] = useState<FilterOption>('all');
 
   useEffect(() => {
     const unsub = subscribeToThreads((data) => {
@@ -287,10 +304,23 @@ export default function ForumScreen() {
     return unsub;
   }, []);
 
-  // Group by date label, preserving order (newest first = today at top)
+  const pinnedThreads = threads.filter((t) => t.type === 'official' || t.pinned);
+
+  // Only show pinned section when on 'all' or 'pinned' filter
+  const showPinned = activeFilter === 'all' || activeFilter === 'pinned';
+
+  // Regular threads: exclude pinned, filter by tag
+  const regularThreads = threads.filter((t) => {
+    if (t.type === 'official' || t.pinned) return false;
+    if (activeFilter === 'all') return true;
+    if (activeFilter === 'pinned') return false;
+    return t.tags.includes(activeFilter);
+  });
+
+  // Group regular threads by date label, preserving order (newest first)
   const groupOrder: string[] = [];
   const grouped: Record<string, ForumThread[]> = {};
-  for (const t of threads) {
+  for (const t of regularThreads) {
     const label = dateGroupLabel(t.createdAt);
     if (!grouped[label]) { grouped[label] = []; groupOrder.push(label); }
     grouped[label].push(t);
@@ -299,6 +329,27 @@ export default function ForumScreen() {
   return (
     <SafeAreaView style={styles.root} edges={['top']}>
       <Text style={styles.pageTitle}>Community</Text>
+
+      {/* Filter tabs */}
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={styles.filterBar}
+        style={styles.filterBarWrap}
+      >
+        {FILTER_TABS.map((tab) => (
+          <TouchableOpacity
+            key={tab.key}
+            style={[styles.filterTab, activeFilter === tab.key && styles.filterTabActive]}
+            onPress={() => setActiveFilter(tab.key)}
+            activeOpacity={0.75}
+          >
+            <Text style={[styles.filterTabText, activeFilter === tab.key && styles.filterTabTextActive]}>
+              {tab.label}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </ScrollView>
 
       {loading ? (
         <View style={styles.loadingWrap}>
@@ -316,10 +367,12 @@ export default function ForumScreen() {
               <Text style={styles.emptyText}>No posts yet. Create the first thread!</Text>
             </View>
           )}
-          {groupOrder.map((group) => (
-            <View key={group}>
-              <Text style={styles.groupHeader}>{group}</Text>
-              {grouped[group].map((thread) => (
+
+          {/* Pinned / Official notices — only shown on 'all' or 'pinned' filter */}
+          {showPinned && pinnedThreads.length > 0 && (
+            <View>
+              <Text style={styles.groupHeader}>📌 Pinned</Text>
+              {pinnedThreads.map((thread) => (
                 <ThreadCard
                   key={thread.id}
                   thread={thread}
@@ -328,7 +381,28 @@ export default function ForumScreen() {
                 />
               ))}
             </View>
-          ))}
+          )}
+
+          {/* Filtered threads grouped by date */}
+          {regularThreads.length === 0 && activeFilter !== 'all' && activeFilter !== 'pinned' ? (
+            <View style={styles.emptyWrap}>
+              <Text style={styles.emptyText}>No posts in this category yet.</Text>
+            </View>
+          ) : activeFilter !== 'pinned' ? (
+            groupOrder.map((group) => (
+              <View key={group}>
+                <Text style={styles.groupHeader}>{group}</Text>
+                {grouped[group].map((thread) => (
+                  <ThreadCard
+                    key={thread.id}
+                    thread={thread}
+                    currentUser={user ?? null}
+                    onPress={() => router.push(`/forum/${thread.id}` as any)}
+                  />
+                ))}
+              </View>
+            ))
+          ) : null}
           <View style={{ height: 90 }} />
         </ScrollView>
       )}
@@ -339,7 +413,7 @@ export default function ForumScreen() {
           onPress={() => router.push('/forum/create' as any)}
           activeOpacity={0.85}
         >
-          <Text style={styles.fabText}>Create Thread</Text>
+          <Ionicons name="add" size={32} color="#FFFFFF" />
         </TouchableOpacity>
       </View>
     </SafeAreaView>
@@ -357,6 +431,14 @@ const styles = StyleSheet.create({
   scrollContent: { paddingHorizontal: 16, paddingBottom: 8 },
   groupHeader: { fontSize: 18, fontWeight: '700', color: '#111827', marginTop: 10, marginBottom: 10 },
 
+  // Filter bar
+  filterBarWrap: { flexGrow: 0, flexShrink: 0 },
+  filterBar: { flexDirection: 'row', gap: 8, paddingHorizontal: 16, paddingVertical: 10 },
+  filterTab: { paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20, borderWidth: 1, borderColor: '#E5E7EB', backgroundColor: '#F9FAFB' },
+  filterTabActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
+  filterTabText: { fontSize: 13, fontWeight: '600', color: '#6B7280' },
+  filterTabTextActive: { color: '#FFFFFF' },
+
   // Card
   card: { backgroundColor: '#FDFAF7', borderRadius: 10, marginBottom: 14, overflow: 'hidden', borderWidth: 1, borderColor: '#E5E7EB', shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 4, shadowOffset: { width: 0, height: 1 }, elevation: 1 },
   cardOfficial: { borderColor: OFFICIAL_STYLE.border, borderWidth: 1.5, backgroundColor: OFFICIAL_STYLE.bg },
@@ -370,6 +452,7 @@ const styles = StyleSheet.create({
   officialTagPill: { alignSelf: 'flex-start', backgroundColor: OFFICIAL_STYLE.tagBg, borderRadius: 6, paddingHorizontal: 8, paddingVertical: 3, marginBottom: 8 },
   officialTagText: { fontSize: 11, fontWeight: '700', color: OFFICIAL_STYLE.tagColor, letterSpacing: 0.5 },
   threadTitle: { fontSize: 18, fontWeight: '700', color: '#111827', lineHeight: 25, marginBottom: 12, letterSpacing: -0.3 },
+  threadTitleRegular: { fontSize: 15, fontWeight: '700', color: '#111827', lineHeight: 21, marginBottom: 8, letterSpacing: -0.2 },
   authorRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 10 },
   authorName: { fontSize: 13, fontWeight: '600', color: '#374151' },
   authorDate: { fontSize: 11, color: '#9CA3AF', marginTop: 1 },
@@ -401,7 +484,7 @@ const styles = StyleSheet.create({
   noComments: { fontSize: 13, color: '#9CA3AF', textAlign: 'center', paddingVertical: 14 },
 
   // FAB
-  fabContainer: { position: 'absolute', bottom: Platform.OS === 'ios' ? 16 : 12, left: 0, right: 0, alignItems: 'center' },
-  fab: { backgroundColor: Colors.primary, borderRadius: 24, paddingVertical: 13, paddingHorizontal: 48, shadowColor: '#000', shadowOpacity: 0.18, shadowRadius: 10, shadowOffset: { width: 0, height: 3 }, elevation: 6 },
+  fabContainer: { position: 'absolute', bottom: Platform.OS === 'ios' ? 16 : 12, right: 16, alignItems: 'flex-end' },
+  fab: { width: 60, height: 60, borderRadius: 30, backgroundColor: Colors.primary, alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOpacity: 0.18, shadowRadius: 10, shadowOffset: { width: 0, height: 3 }, elevation: 6 },
   fabText: { fontSize: 15, fontWeight: '700', color: '#FFFFFF', letterSpacing: 0.2 },
 });
