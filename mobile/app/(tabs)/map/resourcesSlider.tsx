@@ -19,6 +19,9 @@ import { ResourceType, NearbyPlace } from "./resourceTypes";
 
 type ResourceBottomSheetProps = {
   visible: boolean;
+  /** When true, the sheet collapses to just the drag handle (non-resource marker is selected) */
+  peekOnly?: boolean;
+  isResourcesFilterActive: boolean;
   places: NearbyPlace[];
   selectedPlaceId: string | null;
   distanceRadius: number;
@@ -81,10 +84,17 @@ function formatHours(openingHours: string | string[] | undefined): string | null
   return openingHours[0] ?? null;
 }
 
+function formatDistanceMiles(distanceMeters?: number): string | null {
+  if (distanceMeters == null) return null;
+  return `${(distanceMeters / 1609.34).toFixed(1)} mi`;
+}
+
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function ResourceBottomSheet({
   visible,
+  peekOnly = false,
+  isResourcesFilterActive,
   places,
   selectedPlaceId,
   distanceRadius,
@@ -95,25 +105,29 @@ export default function ResourceBottomSheet({
   onSelectPlace,
   onClose,
 }: ResourceBottomSheetProps) {
-  const bottomSheetRef = useRef<BottomSheet>(null);
-  // 4 snap points: collapsed handle → chip bar only → partial list → full
-  const snapPoints = useMemo(() => ["8%", "22%", "50%", "90%"], []);
-  const insets = useSafeAreaInsets();
+    const bottomSheetRef = useRef<BottomSheet>(null);
+    const snapPoints = useMemo(() => [28, "36%", "52%", "68%", "90%"], []);
+    const insets = useSafeAreaInsets();
+
+    const milesValue = Math.round(distanceRadius / 1609.34);
+    const MIN_MILES = 1;
+    const MAX_MILES = 50;
+    const MILES_TO_METERS = 1609;
+    const selectedPlace = places.find((p) => p.id === selectedPlaceId);
 
   useEffect(() => {
-    if (visible) {
-      bottomSheetRef.current?.snapToIndex(selectedPlaceId ? 2 : 1);
+    if (peekOnly) {
+      bottomSheetRef.current?.snapToIndex(0);
+    } else if (visible && selectedPlace) {
+      bottomSheetRef.current?.snapToIndex(1);
+    } else if (visible && isResourcesFilterActive) {
+      bottomSheetRef.current?.snapToIndex(2);
+    } else if (visible) {
+      bottomSheetRef.current?.snapToIndex(0);
     } else {
       bottomSheetRef.current?.snapToIndex(0);
     }
-  }, [visible, selectedPlaceId]);
-
-  const milesValue = Math.round(distanceRadius / 1609.34);
-  const MIN_MILES = 1;
-  const MAX_MILES = 50;
-  const MILES_TO_METERS = 1609.34;
-
-  const selectedPlace = places.find((p) => p.id === selectedPlaceId);
+  }, [visible, peekOnly, selectedPlace, isResourcesFilterActive]);
 
   return (
     <BottomSheet
@@ -126,7 +140,6 @@ export default function ResourceBottomSheet({
       handleIndicatorStyle={styles.handle}
       backgroundStyle={styles.sheetBackground}
     >
-      {/* ── Fixed header (always visible) ── */}
       <View style={styles.header}>
         <Text style={styles.title}>Nearby Resources</Text>
         <Text style={styles.subtitle}>
@@ -137,7 +150,6 @@ export default function ResourceBottomSheet({
             : `${places.length} result${places.length !== 1 ? "s" : ""}`}
         </Text>
 
-        {/* Resource type chips — moved from map into panel */}
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
@@ -167,7 +179,6 @@ export default function ResourceBottomSheet({
           })}
         </ScrollView>
 
-        {/* Selected-place summary card */}
         {selectedPlace && (
           <View style={styles.selectedCard}>
             <View style={styles.selectedCardHeader}>
@@ -180,7 +191,7 @@ export default function ResourceBottomSheet({
             </View>
 
             {selectedPlace.address ? (
-              <Text style={styles.selectedCardAddress} numberOfLines={1}>
+              <Text style={styles.selectedCardAddress} numberOfLines={2}>
                 {selectedPlace.address}
               </Text>
             ) : null}
@@ -210,19 +221,22 @@ export default function ResourceBottomSheet({
               ) : null}
             </View>
 
-            {/* Directions button */}
             <TouchableOpacity
               style={styles.directionsButton}
               onPress={() => openDirections(selectedPlace)}
               activeOpacity={0.82}
             >
-              <Ionicons name="navigate" size={15} color="#FFFFFF" style={{ marginRight: 6 }} />
+              <Ionicons
+                name="navigate"
+                size={15}
+                color="#FFFFFF"
+                style={{ marginRight: 6 }}
+              />
               <Text style={styles.directionsButtonText}>Get Directions</Text>
             </TouchableOpacity>
           </View>
         )}
 
-        {/* Distance slider */}
         <View style={styles.sliderContainer}>
           <View style={styles.sliderLabelRow}>
             <Text style={styles.sliderLabel}>Radius</Text>
@@ -246,7 +260,6 @@ export default function ResourceBottomSheet({
         </View>
       </View>
 
-      {/* ── Scrollable list ── */}
       <BottomSheetFlatList
         data={places}
         keyExtractor={(item) => item.id}
@@ -261,7 +274,6 @@ export default function ResourceBottomSheet({
               onPress={() => onSelectPlace(item)}
               activeOpacity={0.85}
             >
-              {/* Name row */}
               <View style={styles.cardTitleRow}>
                 <Text style={styles.cardTitle} numberOfLines={1}>
                   {item.name}
@@ -276,7 +288,9 @@ export default function ResourceBottomSheet({
                     <Text
                       style={[
                         styles.openBadgeText,
-                        item.isOpen ? styles.openBadgeTextOpen : styles.openBadgeTextClosed,
+                        item.isOpen
+                          ? styles.openBadgeTextOpen
+                          : styles.openBadgeTextClosed,
                       ]}
                     >
                       {item.isOpen ? "Open" : "Closed"}
@@ -285,32 +299,44 @@ export default function ResourceBottomSheet({
                 )}
               </View>
 
-              {/* Address */}
               {item.address ? (
                 <View style={styles.metaRow}>
-                  <Ionicons name="location-outline" size={13} color="#9CA3AF" style={styles.metaIcon} />
+                  <Ionicons
+                    name="location-outline"
+                    size={13}
+                    color="#9CA3AF"
+                    style={styles.metaIcon}
+                  />
                   <Text style={styles.cardMeta} numberOfLines={1}>
                     {item.address}
                   </Text>
                 </View>
               ) : null}
 
-              {/* Opening hours */}
               {hoursString ? (
                 <View style={styles.metaRow}>
-                  <Ionicons name="time-outline" size={13} color="#9CA3AF" style={styles.metaIcon} />
+                  <Ionicons
+                    name="time-outline"
+                    size={13}
+                    color="#9CA3AF"
+                    style={styles.metaIcon}
+                  />
                   <Text style={styles.cardMeta} numberOfLines={1}>
                     {hoursString}
                   </Text>
                 </View>
               ) : null}
 
-              {/* Distance + rating row */}
               <View style={styles.cardFooter}>
                 <View style={styles.row}>
                   {item.distanceMeters != null ? (
                     <View style={styles.metaRow}>
-                      <Ionicons name="walk-outline" size={13} color="#9CA3AF" style={styles.metaIcon} />
+                      <Ionicons
+                        name="walk-outline"
+                        size={13}
+                        color="#9CA3AF"
+                        style={styles.metaIcon}
+                      />
                       <Text style={styles.cardMeta}>
                         {(item.distanceMeters / 1609.34).toFixed(1)} mi away
                       </Text>
@@ -323,7 +349,6 @@ export default function ResourceBottomSheet({
                   ) : null}
                 </View>
 
-                {/* Directions button on card */}
                 <TouchableOpacity
                   style={styles.cardDirectionsButton}
                   onPress={() => openDirections(item)}
@@ -443,12 +468,14 @@ const styles = StyleSheet.create({
   selectedCardAddress: {
     fontSize: 12,
     color: "#6B7280",
-    marginTop: 3,
+    marginTop: 6,
+    lineHeight: 18,
   },
   selectedCardMeta: {
     flexDirection: "row",
     alignItems: "center",
-    marginTop: 5,
+    marginTop: 8,
+    marginBottom: 2,
   },
   selectedCardMetaText: {
     fontSize: 12,
