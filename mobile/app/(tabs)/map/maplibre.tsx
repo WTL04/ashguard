@@ -22,6 +22,7 @@ import {
   ShapeSource,
   FillLayer,
   CircleLayer,
+  PointAnnotation,
 } from '@maplibre/maplibre-react-native';
 
 const { MapView } = MapLibreRN;
@@ -221,6 +222,44 @@ const extractHospitalsFromGeoJSON = (
     : places;
 };
 
+const getResourceMarkerIconName = (type: ResourceType): keyof typeof Ionicons.glyphMap => {
+  switch (type) {
+    case 'hospital':
+      return 'medkit';
+    case 'pharmacy':
+      return 'medical';
+    case 'gas':
+      return 'car';
+    case 'grocery':
+      return 'cart';
+    case 'hotels':
+      return 'bed';
+    case 'convenience':
+      return 'storefront';
+    default:
+      return 'location';
+  }
+};
+
+const getResourceFeatureType = (feature: GeoJSON.Feature): ResourceType => {
+  const rawType =
+    (feature.properties?.resource_type as ResourceType | undefined) ??
+    (feature.properties?.type as ResourceType | undefined);
+
+  if (rawType) return rawType;
+
+  const name =
+    String(
+      feature.properties?.NAME ??
+      feature.properties?.Name ??
+      feature.properties?.name ??
+      ''
+    ).toLowerCase();
+
+  if (name.includes('hospital')) return 'hospital';
+  return 'hospital';
+};
+
 export default function MapLibre() {
   const cameraRef = useRef<CameraRef>(null);
   const hasCenteredOnUserRef = useRef(false);
@@ -316,6 +355,8 @@ export default function MapLibre() {
     cameraRef.current.setCamera({
       centerCoordinate: userCoords,
       zoomLevel: 13,
+      heading: 0,
+      pitch: 0,
       animationDuration: 0,
     });
   }, [mapReady, userCoords]);
@@ -540,6 +581,8 @@ export default function MapLibre() {
       cameraRef.current.setCamera({
         centerCoordinate: coords,
         zoomLevel: 13,
+        heading: 0,
+        pitch: 0,
         animationMode: 'flyTo',
         animationDuration: 600,
       });
@@ -549,6 +592,8 @@ export default function MapLibre() {
       cameraRef.current.setCamera({
         centerCoordinate: CA_CENTER,
         zoomLevel: CA_ZOOM,
+        heading: 0,
+        pitch: 0,
         animationMode: 'flyTo',
         animationDuration: 600,
       });
@@ -644,6 +689,13 @@ export default function MapLibre() {
   };
 }, [resourcesData, visibleNearbyPlaces]);
 
+const visibleResourcePointFeatures = useMemo<GeoJSON.Feature<GeoJSON.Point>[]>(() => {
+  return (visibleResourcesData?.features ?? []).filter(
+    (feature): feature is GeoJSON.Feature<GeoJSON.Point> =>
+      feature.geometry?.type === 'Point'
+  );
+}, [visibleResourcesData]);
+
   const hotspotsCount = hotspotsData?.features.length ?? 0;
   const perimetersCount = perimetersData?.features.length ?? 0;
   const prescribedCount = prescribedData?.features.length ?? 0;
@@ -669,7 +721,12 @@ export default function MapLibre() {
       >
         <Camera
           ref={cameraRef}
-          defaultSettings={{ centerCoordinate: CA_CENTER, zoomLevel: CA_ZOOM }}
+          defaultSettings={{
+            centerCoordinate: CA_CENTER,
+            zoomLevel: CA_ZOOM,
+            heading: 0,
+            pitch: 0,
+          }}
         />
 
         {locationGranted && (
@@ -755,48 +812,41 @@ export default function MapLibre() {
           </ShapeSource>
         )}
 
-        {(activeFilter === 'all' || activeFilter === 'resources') && visibleResourcesData && (
-          <ShapeSource
-            id="resources-data"
-            shape={visibleResourcesData}
-            onPress={(e) => handleResourcePress(e.features[0])}
-          >
-            <CircleLayer
-              id="resources-layer"
-              style={{
-                circleColor: [
-                  'case',
-                  [
-                    '==',
-                    [
-                      'to-string',
-                      ['coalesce', ['get', 'id'], ['get', 'place_id'], ['get', 'OBJECTID'], ['get', 'ID'], '__none__']
-                    ],
-                    selectedResourceFeatureId
-                  ],
-                  '#F58500',
-                  '#10B981',
-                ],
-                circleRadius: [
-                  'case',
-                  [
-                    '==',
-                    [
-                      'to-string',
-                      ['coalesce', ['get', 'id'], ['get', 'place_id'], ['get', 'OBJECTID'], ['get', 'ID'], '__none__']
-                    ],
-                    selectedResourceFeatureId
-                  ],
-                  7,
-                  5,
-                ],
-                circleOpacity: 0.9,
-                circleStrokeWidth: 1.5,
-                circleStrokeColor: '#FFFFFF',
-              }}
-            />
-          </ShapeSource>
-        )}
+        {(activeFilter === 'all' || activeFilter === 'resources') &&
+          visibleResourcePointFeatures.map((feature) => {
+            const coords = feature.geometry.coordinates as [number, number];
+            const markerId = String(
+              feature.properties?.id ??
+              feature.properties?.place_id ??
+              feature.properties?.OBJECTID ??
+              feature.properties?.ID ??
+              ''
+            );
+            const selected = markerId === selectedPlaceId;
+            const resourceMarkerType = getResourceFeatureType(feature);
+
+            return (
+              <PointAnnotation
+                key={`resource-${markerId}`}
+                id={`resource-${markerId}`}
+                coordinate={coords}
+                onSelected={() => handleResourcePress(feature)}
+              >
+                <View
+                  style={[
+                    styles.resourceMarker,
+                    selected ? styles.resourceMarkerSelected : styles.resourceMarkerDefault,
+                  ]}
+                >
+                  <Ionicons
+                    name={getResourceMarkerIconName(resourceMarkerType)}
+                    size={16}
+                    color="#FFFFFF"
+                  />
+                </View>
+              </PointAnnotation>
+            );
+          })}
 
         {selfReportsData && (
           <ShapeSource
@@ -899,7 +949,7 @@ export default function MapLibre() {
                   {f.label}
                 </Text>
 
-                {isFireFilter && !firesLoading && !firesError && badgeCount > 0 && (
+                {isFireFilter && !firesLoading && !firesError && (
                   <View style={[badgeStyle, active && badgeActiveStyle]}>
                     <Text style={[badgeTextStyle, active && styles.badgeTextActive]}>
                       {badgeCount}
@@ -1481,5 +1531,25 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '700',
     color: '#FFFFFF',
+  },
+  resourceMarker: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: '#FFFFFF',
+    shadowColor: '#000',
+    shadowOpacity: 0.18,
+    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 5,
+  },
+  resourceMarkerDefault: {
+    backgroundColor: '#10B981',
+  },
+  resourceMarkerSelected: {
+    backgroundColor: '#F58500',
   },
 });
