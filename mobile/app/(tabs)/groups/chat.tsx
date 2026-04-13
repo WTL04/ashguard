@@ -8,6 +8,7 @@ import {
   TextInput,
   KeyboardAvoidingView,
   Platform,
+  Image,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
@@ -50,6 +51,7 @@ export default function ChatScreen() {
 
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
+  const [chatPhoto, setChatPhoto] = useState('');
   const flatListRef = useRef<FlatList<Message>>(null);
 
   useEffect(() => {
@@ -82,6 +84,7 @@ export default function ChatScreen() {
     return () => clearTimeout(timer);
   }, [messages]);
 
+  // ✅ FIX: Clear unread whenever messages change while chat is open
   useEffect(() => {
     const clearUnreadForCurrentUser = async () => {
       const currentUid = auth.currentUser?.uid;
@@ -96,8 +99,10 @@ export default function ChatScreen() {
       }
     };
 
-    clearUnreadForCurrentUser();
-  }, [chatId]);
+    if (messages.length > 0) {
+      clearUnreadForCurrentUser();
+    }
+  }, [chatId, messages]);
 
   const sendMessage = async () => {
     const trimmed = input.trim();
@@ -184,6 +189,33 @@ export default function ChatScreen() {
     );
   };
 
+  useEffect(() => {
+    const loadChatHeader = async () => {
+      const currentUid = auth.currentUser?.uid;
+      if (!chatId || !currentUid) return;
+
+      try {
+        const chatRef = doc(db, 'chats', String(chatId));
+        const chatSnap = await getDoc(chatRef);
+
+        if (!chatSnap.exists()) return;
+
+        const chatData = chatSnap.data();
+        const participantDetails = chatData.participantDetails || {};
+        const entries = Object.entries(participantDetails) as [string, any][];
+
+        const otherUserEntry = entries.find(([uid]) => uid !== currentUid);
+        const otherUser = otherUserEntry ? otherUserEntry[1] : null;
+
+        setChatPhoto(otherUser?.photoURL || '');
+      } catch (error) {
+        console.log('Error loading chat header:', error);
+      }
+    };
+
+    loadChatHeader();
+  }, [chatId]);
+
   return (
     <>
       <StatusBar style="light" backgroundColor="#F58500" />
@@ -203,8 +235,12 @@ export default function ChatScreen() {
 
             <View style={styles.headerCenter}>
               <View style={styles.headerAvatar}>
-                <Ionicons name="person" size={22} color="#F58500" />
-              </View>
+                {chatPhoto ? (
+                  <Image source={{ uri: chatPhoto }} style={styles.headerAvatarImage} />
+                ) : (
+                  <Ionicons name="person" size={22} color="#F58500" />
+                )}
+              </View>   
 
               <Text style={styles.headerTitle} numberOfLines={1}>
                 {name || 'Chat'}
@@ -248,13 +284,8 @@ export default function ChatScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#EDEDED',
-  },
-  screen: {
-    flex: 1,
-  },
+  container: { flex: 1, backgroundColor: '#EDEDED' },
+  screen: { flex: 1 },
 
   header: {
     backgroundColor: '#F58500',
@@ -263,14 +294,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingBottom: 12,
   },
-  backButton: {
-    width: 32,
-    alignItems: 'flex-start',
-  },
-  headerCenter: {
-    flex: 1,
-    alignItems: 'center',
-  },
+  backButton: { width: 32 },
+  headerCenter: { flex: 1, alignItems: 'center' },
   headerAvatar: {
     width: 40,
     height: 40,
@@ -279,15 +304,15 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: 4,
+    overflow: 'hidden',
   },
-  headerTitle: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: '700',
+  headerAvatarImage: {
+    width: '100%',
+    height: '100%',
+    borderRadius: 20,
   },
-  headerRightSpacer: {
-    width: 32,
-  },
+  headerTitle: { color: '#fff', fontSize: 16, fontWeight: '700' },
+  headerRightSpacer: { width: 32 },
 
   messagesList: {
     paddingHorizontal: 14,
@@ -295,16 +320,9 @@ const styles = StyleSheet.create({
     paddingBottom: 10,
   },
 
-  messageRow: {
-    marginBottom: 12,
-    flexDirection: 'row',
-  },
-  messageRowLeft: {
-    justifyContent: 'flex-start',
-  },
-  messageRowRight: {
-    justifyContent: 'flex-end',
-  },
+  messageRow: { marginBottom: 12, flexDirection: 'row' },
+  messageRowLeft: { justifyContent: 'flex-start' },
+  messageRowRight: { justifyContent: 'flex-end' },
 
   messageBubble: {
     maxWidth: '72%',
@@ -322,28 +340,17 @@ const styles = StyleSheet.create({
     borderBottomLeftRadius: 6,
   },
 
-  messageText: {
-    fontSize: 14,
-  },
-  myMessageText: {
-    color: '#fff',
-  },
-  otherMessageText: {
-    color: '#A85A00',
-  },
+  messageText: { fontSize: 14 },
+  myMessageText: { color: '#fff' },
+  otherMessageText: { color: '#A85A00' },
 
   messageTime: {
     fontSize: 11,
     marginTop: 6,
     alignSelf: 'flex-end',
   },
-  myMessageTime: {
-    color: 'rgba(255,255,255,0.8)',
-  },
-  otherMessageTime: {
-    color: '#A85A00',
-    opacity: 0.75,
-  },
+  myMessageTime: { color: 'rgba(255,255,255,0.8)' },
+  otherMessageTime: { color: '#A85A00', opacity: 0.75 },
 
   inputWrap: {
     paddingHorizontal: 10,
@@ -360,12 +367,6 @@ const styles = StyleSheet.create({
     paddingLeft: 14,
     paddingRight: 10,
   },
-  input: {
-    flex: 1,
-    fontSize: 14,
-    color: '#8C4B00',
-  },
-  sendButton: {
-    marginLeft: 8,
-  },
+  input: { flex: 1, fontSize: 14, color: '#8C4B00' },
+  sendButton: { marginLeft: 8 },
 });

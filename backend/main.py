@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Query
 from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
 from pydantic import BaseModel
@@ -14,7 +14,10 @@ import pandas as pd
 from io import StringIO
 import httpx
 import aiohttp
-from incidents import incidents_sync_worker, sync_calfire_incidents
+from incidents import incidents_sync_worker, sync_calfire_incidents, get_db
+from google.cloud import firestore
+from uuid import uuid4
+from datetime import datetime, timezone, timedelta
 
 load_dotenv()
 
@@ -22,44 +25,55 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
+GEOAPIFY_API_KEY = os.getenv("GEOAPIFY_API_KEY")
+GEOAPIFY_PLACES_URL = "https://api.geoapify.com/v2/places"
+GEOAPIFY_DETAILS_URL = "https://api.geoapify.com/v2/place-details"
+
+GEOAPIFY_CATEGORIES = {
+    "hotels": "accommodation.hotel,accommodation.motel,accommodation.guest_house",
+    "grocery": "commercial.supermarket",
+    "gas": "commercial.gas",
+    "convenience": "commercial.convenience",
+    "hospital": "healthcare.hospital",
+    "pharmacy": "healthcare.pharmacy",
+}
+
+# Snap coordinates to ~1km grid to allow Redis reuse across nearby users
+# without generating a unique cache key per user
+COORD_PRECISION = 2  # ~1.1km resolution
 
 # each dataset has its own poll interval and ttl (dead man's switch)
 CACHE_CONFIGS = {
     "satellite_hotspots": {
         "key": "ashguard:satellite_hotspots",
-        "poll": 300,   # 5 mins
-        "ttl": 600,    # 10 mins
+        "poll": 300,  # 5 mins
+        "ttl": 600,  # 10 mins
     },
     "fire_perimeters": {
         "key": "ashguard:fire_perimeters",
-        "poll": 600,   # 10 mins
-        "ttl": 1200,   # 20 mins
+        "poll": 600,  # 10 mins
+        "ttl": 1200,  # 20 mins
     },
     "prescribed_fires": {
         "key": "ashguard:prescribed_fires",
         "poll": 3600,  # 60 mins
-        "ttl": 7200,   # 120 mins
+        "ttl": 7200,  # 120 mins
     },
     "shelters": {
         "key": "ashguard:shelters",
-        "poll": 600,   # 10 mins
-        "ttl": 1200,   # 20 mins
+        "poll": 600,  # 10 mins
+        "ttl": 1200,  # 20 mins
     },
     "weather_stations": {
         "key": "ashguard:weather_stations",
-        "poll": 300,   # 5 mins
-        "ttl": 600,    # 10 mins
+        "poll": 300,  # 5 mins
+        "ttl": 600,  # 10 mins
     },
     "hospitals": {
         "key": "ashguard:hospitals",
-        "poll": 86400,   # 1 day 
-        "ttl": 172800,   # 2 days
+        "poll": 86400,  # 1 day
+        "ttl": 172800,  # 2 days
     },
-    "grocery_stores": {
-        "key": "ashguard:grocery_stores",
-        "poll": 600,   # 10 mins
-        "ttl": 1200,   # 20 mins
-    }
 }
 
 redis_client: redis_async.Redis | None = None
@@ -76,7 +90,6 @@ class GeoDataResponse(BaseModel):
     shelters: dict
     weather_stations: dict
     hospitals: dict
-    grocery_stores: dict
 
 
 class CacheStatusResponse(BaseModel):
@@ -84,6 +97,12 @@ class CacheStatusResponse(BaseModel):
     redis_used_memory: str | None = None
     redis_connected: bool
     error: str | None = None
+
+
+class SelfReportCreate(BaseModel):
+    latitude: float
+    longitude: float
+    description: str | None = None
 
 
 """
@@ -118,34 +137,208 @@ def dicts_to_geojson(data_list: list) -> dict:
     return {"type": "FeatureCollection", "features": features}
 
 
+def self_report_doc_to_feature(doc_id: str, data: dict) -> dict:
+    return {
+        "type": "Feature",
+        "geometry": {
+            "type": "Point",
+            "coordinates": [data["longitude"], data["latitude"]],
+        },
+        "properties": {
+            "reportId": doc_id,
+            "type": data.get("type", "fire"),
+            "status": data.get("status", "pending"),
+            "description": data.get("description", ""),
+            "source": data.get("source", "user"),
+            "createdAt": data.get("createdAt"),
+            "updatedAt": data.get("updatedAt"),
+            "expiresAt": data.get("expiresAt"),
+            "confirmedCount": data.get("confirmedCount", 0),
+            "isActive": data.get("isActive", True),
+        },
+    }
+
+
 """
 --- Weather Data Helpers ---
 """
 
 CALIFORNIA_STATION_IDS = [
-    "KNGZ", "KAAT", "KAPV", "KACV", "KAUN", "KAVX", "KBFL", "KBAB", "KBUO", "KBYS",
-    "KL35", "KBIH", "KBLH", "KL08", "KO57", "KBAN", "KBUR", "KBNY", "KC83", "KCXL",
-    "KCMA", "KCZZ", "KNFG", "KCRQ", "KO59", "KCIC", "KNID", "KCNO", "KO22", "KCCR",
-    "KAJO", "KSNA", "KCEC", "KDAG", "KDWA", "KEDU", "KDLO", "KEDW", "K9L2", "KNJK",
-    "KEMT", "KBLU", "KEKA", "KL18", "KFOT", "KFCH", "KFAT", "KFUL", "KGOO", "KHAF",
-    "KHJO", "KO18", "KHHR", "KHWD", "KHES", "KHMT", "KCVH", "KHGT", "KNRS", "KIPL",
-    "KIYK", "KJAQ", "KWJF", "KPOC", "KWHP", "KNLC", "KLHM", "KLLR", "KLVK", "KLPC",
-    "KLGB", "KSLI", "KCQT", "KLAX", "KMAE", "KMMH", "KMYV", "KMHR", "KMCC", "KMER",
-    "KMCE", "KNKX", "KMOD", "KNUQ", "KMHV", "KSIY", "KMRY", "KMHS", "KMWS", "KF70",
-    "KAPC", "KEED", "K3A6", "KNZY", "KDVO", "KOAK", "KL52", "KOKB", "KNXF", "KONT",
-    "KOVE", "KOXR", "KGXA", "KPMD", "KPSP", "KPAO", "KPRB", "KO69", "KPVF", "KNTD",
-    "KPTV", "K87Q", "KRNM", "KRBL", "KRDD", "KREI", "KO32", "KO88", "KRAL", "KRIV",
-    "KSAC", "KSMF", "KSNS", "KCPU", "KSBD", "KSQL", "KNUC", "KSDB", "KSDM", "KSAN",
-    "KMYF", "KSEE", "KSFO", "KSJC", "KRHV", "KSBP", "KE16", "KNSI", "KSBA", "KSMX",
-    "KSMO", "KSTS", "KIZA", "KO87", "KTVL", "KSCK", "KSVE", "KTSP", "KTRM", "KTOA",
-    "KTCY", "KSUU", "KO86", "KTRK", "KNXP", "KUKI", "KCCB", "KVCB", "KVBG", "KXVW",
-    "KVNY", "KVCV", "KVIS", "KWVI", "KO54",
+    "KNGZ",
+    "KAAT",
+    "KAPV",
+    "KACV",
+    "KAUN",
+    "KAVX",
+    "KBFL",
+    "KBAB",
+    "KBUO",
+    "KBYS",
+    "KL35",
+    "KBIH",
+    "KBLH",
+    "KL08",
+    "KO57",
+    "KBAN",
+    "KBUR",
+    "KBNY",
+    "KC83",
+    "KCXL",
+    "KCMA",
+    "KCZZ",
+    "KNFG",
+    "KCRQ",
+    "KO59",
+    "KCIC",
+    "KNID",
+    "KCNO",
+    "KO22",
+    "KCCR",
+    "KAJO",
+    "KSNA",
+    "KCEC",
+    "KDAG",
+    "KDWA",
+    "KEDU",
+    "KDLO",
+    "KEDW",
+    "K9L2",
+    "KNJK",
+    "KEMT",
+    "KBLU",
+    "KEKA",
+    "KL18",
+    "KFOT",
+    "KFCH",
+    "KFAT",
+    "KFUL",
+    "KGOO",
+    "KHAF",
+    "KHJO",
+    "KO18",
+    "KHHR",
+    "KHWD",
+    "KHES",
+    "KHMT",
+    "KCVH",
+    "KHGT",
+    "KNRS",
+    "KIPL",
+    "KIYK",
+    "KJAQ",
+    "KWJF",
+    "KPOC",
+    "KWHP",
+    "KNLC",
+    "KLHM",
+    "KLLR",
+    "KLVK",
+    "KLPC",
+    "KLGB",
+    "KSLI",
+    "KCQT",
+    "KLAX",
+    "KMAE",
+    "KMMH",
+    "KMYV",
+    "KMHR",
+    "KMCC",
+    "KMER",
+    "KMCE",
+    "KNKX",
+    "KMOD",
+    "KNUQ",
+    "KMHV",
+    "KSIY",
+    "KMRY",
+    "KMHS",
+    "KMWS",
+    "KF70",
+    "KAPC",
+    "KEED",
+    "K3A6",
+    "KNZY",
+    "KDVO",
+    "KOAK",
+    "KL52",
+    "KOKB",
+    "KNXF",
+    "KONT",
+    "KOVE",
+    "KOXR",
+    "KGXA",
+    "KPMD",
+    "KPSP",
+    "KPAO",
+    "KPRB",
+    "KO69",
+    "KPVF",
+    "KNTD",
+    "KPTV",
+    "K87Q",
+    "KRNM",
+    "KRBL",
+    "KRDD",
+    "KREI",
+    "KO32",
+    "KO88",
+    "KRAL",
+    "KRIV",
+    "KSAC",
+    "KSMF",
+    "KSNS",
+    "KCPU",
+    "KSBD",
+    "KSQL",
+    "KNUC",
+    "KSDB",
+    "KSDM",
+    "KSAN",
+    "KMYF",
+    "KSEE",
+    "KSFO",
+    "KSJC",
+    "KRHV",
+    "KSBP",
+    "KE16",
+    "KNSI",
+    "KSBA",
+    "KSMX",
+    "KSMO",
+    "KSTS",
+    "KIZA",
+    "KO87",
+    "KTVL",
+    "KSCK",
+    "KSVE",
+    "KTSP",
+    "KTRM",
+    "KTOA",
+    "KTCY",
+    "KSUU",
+    "KO86",
+    "KTRK",
+    "KNXP",
+    "KUKI",
+    "KCCB",
+    "KVCB",
+    "KVBG",
+    "KXVW",
+    "KVNY",
+    "KVCV",
+    "KVIS",
+    "KWVI",
+    "KO54",
 ]
 
 NWS_HEADERS = {
     "User-Agent": "AshGuard/1.0 (ashguard-project@example.com)",
     "Accept": "application/geo+json",
 }
+
+"""
+--- Data Fetchers ---
+"""
 
 
 async def fetch_single_station(
@@ -169,9 +362,8 @@ async def fetch_single_station(
                     (
                         obs
                         for obs in data.get("features", [])
-                        if obs.get("properties", {})
-                        .get("temperature", {})
-                        .get("value") is not None
+                        if obs.get("properties", {}).get("temperature", {}).get("value")
+                        is not None
                     ),
                     None,
                 )
@@ -192,7 +384,9 @@ async def fetch_single_station(
                         "stationId": station_id,
                         "stationName": props.get("stationName", station_id),
                         "temperature": props.get("temperature", {}).get("value"),
-                        "relativeHumidity": props.get("relativeHumidity", {}).get("value"),
+                        "relativeHumidity": props.get("relativeHumidity", {}).get(
+                            "value"
+                        ),
                         "dewpoint": props.get("dewpoint", {}).get("value"),
                         "windSpeed": props.get("windSpeed", {}).get("value"),
                         "timestamp": props.get("timestamp"),
@@ -229,11 +423,6 @@ async def fetch_weather_data() -> dict:
 
     logger.info(f"Weather fetch complete: {len(features)} stations with valid data.")
     return {"type": "FeatureCollection", "features": features}
-
-
-"""
---- Data Fetchers ---
-"""
 
 
 async def fetch_satellite_api(state: str | None = None) -> dict:
@@ -285,7 +474,9 @@ async def fetch_satellite_api(state: str | None = None) -> dict:
                 df_list.append(satellite_df[essential_cols])
                 logger.info(f"Successfully fetched data from {satellite}")
             else:
-                logger.warning(f"Failed to fetch from {satellite}: status {r.status_code}")
+                logger.warning(
+                    f"Failed to fetch from {satellite}: status {r.status_code}"
+                )
 
     if not df_list:
         return EMPTY_FEATURE_COLLECTION
@@ -412,33 +603,115 @@ async def fetch_hospitals(state: str | None = None) -> dict:
         return r.json()
 
 
-async def fetch_grocery_stores(state: str | None = None) -> dict:
+"""
+--- Geoapify Fetchers (live, coordinate-based) ---
+"""
+
+
+async def fetch_nearby_places(
+    lat: float,
+    lon: float,
+    resource_type: str,
+    radius_meters: int = 10000,
+    limit: int = 20,
+) -> dict:
     """
-    Returns GeoJSON of grocery stores.
-    Set state="CA" for California only, otherwise returns all grocery stores.
+    Returns a GeoJSON FeatureCollection of nearby hotels or grocery stores
+    from Geoapify. Results are keyed by snapped coordinates in Redis so that
+    users within ~1km of each other share the same cached response.
+
+    Opening hours are NOT included here. Call /api/v1/places/details?place_id=
+    only when a user taps a specific pin.
     """
-    if state and state.upper() == "CA":
-        where_clause = "STATE = 'CA'"
-        logger.info("Fetching California grocery stores")
-    else:
-        where_clause = "1=1"
-        logger.info("Fetching all grocery stores")
+    if not GEOAPIFY_API_KEY:
+        raise ValueError("GEOAPIFY_API_KEY environment variable not set")
+
+    categories = GEOAPIFY_CATEGORIES[resource_type]
+    logger.info(
+        f"Fetching nearby {resource_type} at ({lat}, {lon}), radius={radius_meters}m"
+    )
 
     params = {
-        "where": where_clause,
-        "outFields": "*",
-        "returnGeometry": "true",
-        "f": "geojson",
-        "outSR": 4326,
-        "resultRecordCount": 2000,
+        "categories": categories,
+        "filter": f"circle:{lon},{lat},{radius_meters}",
+        "bias": f"proximity:{lon},{lat}",
+        "limit": limit,
+        "lang": "en",
+        "apiKey": GEOAPIFY_API_KEY,
     }
 
-    url = "https://services2.arcgis.com/HsXtOCMp1Nis1Ogr/arcgis/rest/services/GroceryStores_FullLine/FeatureServer/0/query"
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        r = await client.get(GEOAPIFY_PLACES_URL, params=params)
+        r.raise_for_status()
+        raw = r.json()
+
+    features = []
+    for feature in raw.get("features", []):
+        props = feature.get("properties", {})
+        geometry = feature.get("geometry", {})
+
+        features.append(
+            {
+                "type": "Feature",
+                "geometry": geometry,
+                "properties": {
+                    "name": props.get("name"),
+                    "address": props.get("formatted"),
+                    "address_line1": props.get("address_line1"),
+                    "address_line2": props.get("address_line2"),
+                    "lat": props.get("lat"),
+                    "lon": props.get("lon"),
+                    "categories": props.get("categories", []),
+                    "place_id": props.get("place_id"),
+                    "resource_type": resource_type,
+                },
+            }
+        )
+
+    return {"type": "FeatureCollection", "features": features}
+
+
+async def fetch_place_details(place_id: str) -> dict:
+    """
+    Returns opening hours, phone, and website for a single place.
+    Called on demand when a user taps a pin -- never on map load.
+    """
+    if not GEOAPIFY_API_KEY:
+        raise ValueError("GEOAPIFY_API_KEY environment variable not set")
+
+    logger.info(f"Fetching place details for place_id={place_id}")
+
+    params = {
+        "id": place_id,
+        "apiKey": GEOAPIFY_API_KEY,
+    }
 
     async with httpx.AsyncClient(timeout=30.0) as client:
-        r = await client.get(url, params=params)
+        r = await client.get(GEOAPIFY_DETAILS_URL, params=params)
         r.raise_for_status()
-        return r.json()
+        raw = r.json()
+
+    details_feature = next(
+        (
+            f
+            for f in raw.get("features", [])
+            if f.get("properties", {}).get("feature_type") == "details"
+        ),
+        None,
+    )
+
+    if not details_feature:
+        return {}
+
+    props = details_feature.get("properties", {})
+
+    return {
+        "place_id": place_id,
+        "name": props.get("name"),
+        "opening_hours": props.get("opening_hours"),
+        "phone": props.get("phone"),
+        "website": props.get("website"),
+    }
 
 
 """
@@ -452,7 +725,6 @@ FETCH_FUNCTIONS = {
     "shelters": fetch_shelters,
     "weather_stations": fetch_weather_data,
     "hospitals": lambda: fetch_hospitals(state="CA"),
-    "grocery_stores": lambda: fetch_grocery_stores(state="CA")
 }
 
 
@@ -492,6 +764,9 @@ async def lifespan(app: FastAPI):
     if not os.getenv("NASA_FIRMS_API_KEY"):
         raise RuntimeError("NASA_FIRMS_API_KEY environment variable is not set")
 
+    if not os.getenv("GEOAPIFY_API_KEY"):
+        raise RuntimeError("GEOAPIFY_API_KEY environment variable is not set")
+
     global redis_client
     redis_client = redis_async.Redis.from_url(
         REDIS_URL, encoding="utf-8", decode_responses=True
@@ -504,8 +779,7 @@ async def lifespan(app: FastAPI):
         logger.error(f"Redis connection failed: {e}")
 
     dataset_tasks = [
-        asyncio.create_task(dataset_worker(name))
-        for name in CACHE_CONFIGS
+        asyncio.create_task(dataset_worker(name)) for name in CACHE_CONFIGS
     ]
     incidents_task = asyncio.create_task(incidents_sync_worker())
 
@@ -553,6 +827,125 @@ async def get_cached_data():
         logger.warning(f"Serving empty collections for: {missing}")
 
     return response_data
+
+
+@app.get("/api/v1/places/nearby")
+async def get_nearby_places(
+    lat: float = Query(..., description="User latitude"),
+    lon: float = Query(..., description="User longitude"),
+    type: str = Query(
+        ..., description="Resource type: hotels, grocery, gas, or convenience"
+    ),
+    radius: int = Query(10000, description="Search radius in meters"),
+    limit: int = Query(20, description="Max results (1-50)"),
+):
+    """
+    Returns nearby hotels or grocery stores from Geoapify for a given coordinate.
+    Results are cached in Redis by snapped coordinate and resource type.
+    TTL is 1 hour -- business data changes slowly, snapping avoids per-user cache explosion.
+    """
+    if type not in GEOAPIFY_CATEGORIES:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "detail": f"Invalid type '{type}'. Must be one of: {list(GEOAPIFY_CATEGORIES.keys())}"
+            },
+        )
+
+
+    limit = max(1, min(limit, 50))
+
+    # Snap coordinates to ~1km grid to share cache across nearby users
+    snapped_lat = round(lat, COORD_PRECISION)
+    snapped_lon = round(lon, COORD_PRECISION)
+    cache_key = f"ashguard:places:{type}:{snapped_lat}:{snapped_lon}:{radius}"
+
+    # Check and call the cache first, to reduce multiple API calls to Geoapify
+    try:
+        cached = await redis_client.get(cache_key)
+        if cached:
+            logger.info(f"[places/{type}] Cache hit for ({snapped_lat}, {snapped_lon})")
+            return json.loads(cached)
+    except Exception as e:
+        logger.warning(f"[places/{type}] Redis read failed, proceeding to fetch: {e}")
+
+    # If there is no existing cache, API call to Geoapify
+    try:
+        result = await fetch_nearby_places(
+            lat, lon, type, radius_meters=radius, limit=limit
+        )
+    except httpx.HTTPStatusError as e:
+        logger.error(
+            f"[places/{type}] Geoapify HTTP error: "
+            f"status={e.response.status_code}, body={e.response.text}"
+        )
+        return JSONResponse(
+            status_code=502,
+            content={
+                "detail": "Failed to fetch places from upstream provider",
+                "upstream_status": e.response.status_code,
+            },
+        )
+    except Exception as e:
+        logger.exception(f"[places/{type}] Geoapify fetch failed")
+        return JSONResponse(
+            status_code=502,
+            content={"detail": str(e)},
+        )
+
+    # Write to Redis
+    try:
+        await redis_client.setex(cache_key, 3600, json.dumps(result))
+    except Exception as e:
+        logger.warning(f"[places/{type}] Redis write failed: {e}")
+
+    return result
+
+
+@app.get("/api/v1/places/details")
+async def get_place_details(
+    place_id: str = Query(
+        ..., description="Geoapify place_id from a nearby places response"
+    ),
+):
+    """
+    Returns opening hours, phone, and website for a single place.
+    Call this only when a user taps a pin -- not on map load.
+    Results are cached in Redis for 24 hours since business details rarely change.
+    """
+    cache_key = f"ashguard:place_details:{place_id}"
+
+    try:
+        cached = await redis_client.get(cache_key)
+        if cached:
+            logger.info(f"[place_details] Cache hit for place_id={place_id}")
+            return json.loads(cached)
+    except Exception as e:
+        logger.warning(f"[place_details] Redis read failed, proceeding to fetch: {e}")
+
+    try:
+        result = await fetch_place_details(place_id)
+    except Exception as e:
+        logger.error(
+            f"[place_details] Geoapify fetch failed for place_id={place_id}: {e}"
+        )
+        return JSONResponse(
+            status_code=502,
+            content={"detail": "Failed to fetch place details from upstream provider"},
+        )
+
+    if not result:
+        return JSONResponse(
+            status_code=404,
+            content={"detail": f"No details found for place_id={place_id}"},
+        )
+
+    try:
+        await redis_client.setex(cache_key, 86400, json.dumps(result))
+    except Exception as e:
+        logger.warning(f"[place_details] Redis write failed: {e}")
+
+    return result
 
 
 @app.get("/api/v1/cache/status", response_model=CacheStatusResponse)
@@ -610,4 +1003,72 @@ async def manual_sync_incidents():
         return JSONResponse(
             status_code=500,
             content={"detail": f"Sync failed: {str(e)}"},
+        )
+
+
+@app.post("/api/v1/self-reports")
+async def create_self_report(payload: SelfReportCreate):
+    try:
+        db = get_db()
+        report_id = f"self_report_{uuid4().hex}"
+
+        now = datetime.now(timezone.utc)
+        expires_at = now + timedelta(hours=6)
+
+        report_data = {
+            "type": "fire",
+            "status": "pending",
+            "latitude": payload.latitude,
+            "longitude": payload.longitude,
+            "description": payload.description or "",
+            "source": "user",
+            "confirmedCount": 0,
+            "isActive": True,
+            "createdAt": now.isoformat(),
+            "updatedAt": now.isoformat(),
+            "expiresAt": expires_at.isoformat(),
+        }
+
+        await db.collection("self_reports").document(report_id).set(report_data)
+
+        return {
+            "message": "Self report created",
+            "report": self_report_doc_to_feature(report_id, report_data),
+        }
+    except Exception as e:
+        logger.error(f"Failed to create self report: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"Failed to create self report: {str(e)}"},
+        )
+
+
+@app.get("/api/v1/self-reports")
+async def get_self_reports():
+    try:
+        db = get_db()
+        now_iso = datetime.now(timezone.utc).isoformat()
+
+        query = (
+            db.collection("self_reports")
+            .where("isActive", "==", True)
+            .where("expiresAt", ">", now_iso)
+        )
+
+        docs = query.stream()
+
+        features = []
+        async for doc in docs:
+            data = doc.to_dict()
+            features.append(self_report_doc_to_feature(doc.id, data))
+
+        return {
+            "type": "FeatureCollection",
+            "features": features,
+        }
+    except Exception as e:
+        logger.error(f"Failed to fetch self reports: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"Failed to fetch self reports: {str(e)}"},
         )

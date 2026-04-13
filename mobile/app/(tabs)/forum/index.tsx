@@ -281,12 +281,12 @@ type FilterOption = 'all' | 'pinned' | 'Wildfire' | 'Question' | 'Resources' | '
 
 const FILTER_TABS: { key: FilterOption; label: string }[] = [
   { key: 'all',         label: 'All' },
-  { key: 'pinned',      label: '📌 Pinned' },
-  { key: 'Wildfire',    label: '🔥 Wildfire' },
-  { key: 'Question',    label: '❓ Question' },
-  { key: 'Resources',   label: '📦 Resources' },
-  { key: 'Self Report', label: '🙋 Self Report' },
-  { key: 'Update',      label: '📢 Update' },
+  { key: 'pinned',      label: 'Official' },
+  { key: 'Wildfire',    label: 'Wildfire' },
+  { key: 'Question',    label: 'Question' },
+  { key: 'Resources',   label: 'Resources' },
+  { key: 'Self Report', label: 'Self Report' },
+  { key: 'Update',      label: 'Update' },
 ];
 
 export default function ForumScreen() {
