@@ -135,7 +135,7 @@ export const fetchNearbyResources = async (payload: {
     lat: latitude.toString(),
     lon: longitude.toString(),
     type,
-    radius: radius.toString(),
+    radius: BASE_RADIUS.toString(),
     limit: Math.round(limit).toString(),
   });
 
