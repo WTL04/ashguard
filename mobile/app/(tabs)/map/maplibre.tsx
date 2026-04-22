@@ -34,17 +34,11 @@ import {
   submitSelfReport,
   fetchNearbyResources,
 } from '../../services/mapApi';
-import { collection, query, where, onSnapshot } from 'firebase/firestore';
-import { db } from '@/lib/firebaseConfig';
+import { collection, query, where, onSnapshot, doc, getDoc } from 'firebase/firestore';
+import { auth, db } from '@/lib/firebaseConfig';
 
 import ResourceBottomSheet from './resourcesSlider';
-
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useFocusEffect } from '@react-navigation/native';
-
-const HOME_ADDRESS_KEY = 'ashguard_home_address';
-const HOME_COORDS_KEY  = 'ashguard_home_coords';
-const SAVED_PLACES_KEY = 'ashguard_saved_places';
 
 type UserLatLng = { latitude: number; longitude: number };
 type UserSavedPlace = { id: string; nickname: string; address: string; coords: UserLatLng | null; };
@@ -314,6 +308,7 @@ export default function MapLibre() {
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastKnownResourcesCountRef = useRef<number>(0);
   const [search, setSearch] = useState('');
+  const [isSearchFocused, setIsSearchFocused] = useState(false);
 
   // Fire state
   const [hotspotsData, setHotspotsData] = useState<GeoJSON.FeatureCollection | null>(null);
@@ -353,20 +348,44 @@ export default function MapLibre() {
   const [savedPlaces, setSavedPlaces]             = useState<UserSavedPlace[]>([]);
   const [selectedSavedPlaceId, setSelectedSavedPlaceId] = useState<string | null>(null);
 
-  useFocusEffect(React.useCallback(() => {
-    (async () => {
-      try {
-        const [addr, coords, places] = await Promise.all([
-          AsyncStorage.getItem(HOME_ADDRESS_KEY),
-          AsyncStorage.getItem(HOME_COORDS_KEY),
-          AsyncStorage.getItem(SAVED_PLACES_KEY),
-        ]);
-        if (addr)   setHomeAddress(addr);
-        if (coords) setHomeCoords(JSON.parse(coords));
-        if (places) setSavedPlaces(JSON.parse(places));
-      } catch {}
-    })();
-  }, []));
+  useFocusEffect(
+    React.useCallback(() => {
+      const loadUserPlaces = async () => {
+        try {
+          const user = auth.currentUser;
+          if (!user) {
+            setHomeAddress(null);
+            setHomeCoords(null);
+            setSavedPlaces([]);
+            return;
+          }
+
+          const userRef = doc(db, "users", user.uid);
+          const snapshot = await getDoc(userRef);
+
+          if (!snapshot.exists()) {
+            setHomeAddress(null);
+            setHomeCoords(null);
+            setSavedPlaces([]);
+            return;
+          }
+
+          const data = snapshot.data();
+
+          setHomeAddress(data.homeAddress || null);
+          setHomeCoords(data.homeCoords || null);
+          setSavedPlaces(Array.isArray(data.savedPlaces) ? data.savedPlaces : []);
+        } catch (error) {
+          console.error("Error loading user places on map:", error);
+          setHomeAddress(null);
+          setHomeCoords(null);
+          setSavedPlaces([]);
+        }
+      };
+
+      loadUserPlaces();
+    }, [])
+  );
 
   const clearSelections = () => {
     setSelectedData(null);
@@ -1006,6 +1025,39 @@ export default function MapLibre() {
     [selectedWeatherId]
   );
 
+  const savedMapLocations = useMemo(() => {
+    const locations: Array<{
+      id: string;
+      label: string;
+      icon: keyof typeof Ionicons.glyphMap;
+      coordinate: [number, number];
+      isHome?: boolean;
+    }> = [];
+
+    if (homeCoords) {
+      locations.push({
+        id: '__home__',
+        label: 'Home',
+        icon: 'home',
+        coordinate: [homeCoords.longitude, homeCoords.latitude],
+        isHome: true,
+      });
+    }
+
+    savedPlaces
+      .filter((place): place is UserSavedPlace & { coords: UserLatLng } => place.coords != null)
+      .forEach((place) => {
+        locations.push({
+          id: place.id,
+          label: place.nickname,
+          icon: 'bookmark',
+          coordinate: [place.coords.longitude, place.coords.latitude],
+        });
+      });
+
+    return locations;
+  }, [homeCoords, savedPlaces]);
+
   return (
     <View style={styles.root}>
       <MapView
@@ -1283,41 +1335,72 @@ export default function MapLibre() {
             );
           })}
           {/* Home pin */}
-            {homeCoords && (
-              <PointAnnotation
-                key={`home-${selectedSavedPlaceId === '__home__' ? 'sel' : 'def'}`}
-                id="home-pin"
-                coordinate={[homeCoords.longitude, homeCoords.latitude]}
-                onSelected={() => { clearSelections(); setSelectedSavedPlaceId('__home__'); focusCameraOnCoordinate([homeCoords.longitude, homeCoords.latitude], 15); }}
+          {homeCoords && (
+            <PointAnnotation
+              key={`home-${selectedSavedPlaceId === '__home__' ? 'sel' : 'def'}`}
+              id="home-pin"
+              coordinate={[homeCoords.longitude, homeCoords.latitude]}
+              onSelected={() => {
+                clearSelections();
+                setSelectedSavedPlaceId('__home__');
+                focusCameraOnCoordinate([homeCoords.longitude, homeCoords.latitude], 15);
+              }}
+            >
+              <View
+                style={{
+                  width: 24,
+                  height: 24,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
               >
-                <View style={styles.savedPlaceAnnotation}>
-                  <View style={[styles.savedPlaceMarker, styles.homeMarker, selectedSavedPlaceId === '__home__' && styles.homeMarkerSelected]}>
-                    <Ionicons name="home" size={13} color="#FFFFFF" />
+                <View
+                  style={[
+                    styles.homeMapMarker,
+                    selectedSavedPlaceId === '__home__' && styles.homeMapMarkerSelected,
+                  ]}
+                >
+                  <Ionicons name="home" size={12} color="#FFFFFF" />
+                </View>
+              </View>
+            </PointAnnotation>
+          )}
+
+          {/* Saved place pins */}
+          {savedPlaces.filter((p) => p.coords != null).map((place) => {
+            const selected = selectedSavedPlaceId === place.id;
+
+            return (
+              <PointAnnotation
+                key={`saved-${place.id}-${selected ? 'sel' : 'def'}`}
+                id={`saved-${place.id}`}
+                coordinate={[place.coords!.longitude, place.coords!.latitude]}
+                onSelected={() => {
+                  clearSelections();
+                  setSelectedSavedPlaceId(place.id);
+                  focusCameraOnCoordinate([place.coords!.longitude, place.coords!.latitude], 15);
+                }}
+              >
+                <View
+                  style={{
+                    width: 24,
+                    height: 24,
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}
+                >
+                  <View
+                    style={[
+                      styles.savedLocationMapMarker,
+                      selected && styles.savedLocationMapMarkerSelected,
+                    ]}
+                  >
+                    <Ionicons name="bookmark" size={12} color="#FFFFFF" />
                   </View>
-                  <View style={[styles.markerPin, styles.homePin]} />
                 </View>
               </PointAnnotation>
-            )}
-
-            {/* Saved place pins */}
-            {savedPlaces.filter(p => p.coords != null).map(place => {
-              const selected = selectedSavedPlaceId === place.id;
-              return (
-                <PointAnnotation
-                  key={`saved-${place.id}-${selected ? 'sel' : 'def'}`}
-                  id={`saved-${place.id}`}
-                  coordinate={[place.coords!.longitude, place.coords!.latitude]}
-                  onSelected={() => { clearSelections(); setSelectedSavedPlaceId(place.id); focusCameraOnCoordinate([place.coords!.longitude, place.coords!.latitude], 15); }}
-                >
-                  <View style={styles.savedPlaceAnnotation}>
-                    <View style={[styles.savedPlaceMarker, styles.savedMarker, selected && styles.savedMarkerSelected]}>
-                      <Ionicons name="bookmark" size={12} color="#FFFFFF" />
-                    </View>
-                    <View style={[styles.markerPin, styles.savedPin, selected && styles.savedPinSelected]} />
-                  </View>
-                </PointAnnotation>
-              );
-            })}
+            );
+          })}
     
         {selfReportsData &&
           (selfReportsData.features ?? [])
@@ -1371,11 +1454,66 @@ export default function MapLibre() {
               placeholderTextColor="#9CA3AF"
               value={search}
               onChangeText={setSearch}
+              onFocus={() => setIsSearchFocused(true)}
+              onBlur={() => {
+                setTimeout(() => setIsSearchFocused(false), 150);
+              }}
               returnKeyType="search"
             />
             <Ionicons name="search-outline" size={18} color="#9CA3AF" />
           </View>
         </View>
+
+        {isSearchFocused && savedMapLocations.length > 0 && (
+          <View style={styles.savedLocationsDropdown}>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              keyboardShouldPersistTaps="handled"
+              contentContainerStyle={styles.savedLocationsRow}
+              style={styles.savedLocationsScroll}
+            >
+              {savedMapLocations.map((location) => {
+                const selected = selectedSavedPlaceId === location.id;
+
+                return (
+                  <TouchableOpacity
+                    key={location.id}
+                    style={[
+                      styles.savedLocationChip,
+                      selected && styles.savedLocationChipSelected,
+                      location.isHome && styles.savedLocationChipHome,
+                    ]}
+                    onPress={() => {
+                      clearSelections();
+                      setSelectedSavedPlaceId(location.id);
+                      focusCameraOnCoordinate(location.coordinate, 15);
+                      setSearch(location.label);
+                      setIsSearchFocused(false);
+                    }}
+                    activeOpacity={0.85}
+                  >
+                    <Ionicons
+                      name={location.icon}
+                      size={13}
+                      color={selected || location.isHome ? '#FFFFFF' : '#4B5563'}
+                      style={{ marginRight: 6 }}
+                    />
+                    <Text
+                      style={[
+                        styles.savedLocationChipText,
+                        (selected || location.isHome) && styles.savedLocationChipTextSelected,
+                      ]}
+                      numberOfLines={1}
+                    >
+                      {location.label}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+          </View>
+        )}
 
         <ScrollView
           horizontal
@@ -2148,29 +2286,157 @@ const styles = StyleSheet.create({
   selfReportMarkerSelected: {
     backgroundColor: '#B45309',
   },
-  savedPlaceAnnotation: { alignItems: 'center' },
-  savedPlaceMarker: {
-    width: 30, height: 30, borderRadius: 15,
-    alignItems: 'center', justifyContent: 'center',
-    borderWidth: 2.5, borderColor: '#FFFFFF',
-    shadowColor: '#000', shadowOpacity: 0.25, shadowRadius: 6,
-    shadowOffset: { width: 0, height: 3 }, elevation: 8,
+  savedPlaceAnnotation: {
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  markerPin: { width: 3, height: 8, borderRadius: 1.5, marginTop: -1 },
 
-  homeMarker:         { backgroundColor: '#2563EB' },
-  homeMarkerSelected: { backgroundColor: '#1E40AF', transform: [{ scale: 1.2 }] },
-  homePin:            { backgroundColor: '#2563EB' },
+  savedPlaceMarker: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: '#FFFFFF',
+    shadowColor: '#000',
+    shadowOpacity: 0.18,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 3 },
+    elevation: 5,
+  },
 
-  savedMarker:         { backgroundColor: '#7C3AED' },
-  savedMarkerSelected: { backgroundColor: '#5B21B6', transform: [{ scale: 1.2 }] },
-  savedPin:            { backgroundColor: '#7C3AED' },
-  savedPinSelected:    { backgroundColor: '#5B21B6' },
+  markerPin: {
+    width: 10,
+    height: 10,
+    marginTop: -4,
+    transform: [{ rotate: '45deg' }],
+    borderBottomRightRadius: 2,
+    borderWidth: 2,
+    borderColor: '#FFFFFF',
+  },
+
+  homeMarker: {
+    backgroundColor: '#2563EB',
+  },
+  homeMarkerSelected: {
+    transform: [{ scale: 1.12 }],
+  },
+  homePin: {
+    backgroundColor: '#2563EB',
+  },
+  homePinSelected: {
+    transform: [{ rotate: '45deg' }, { scale: 1.08 }],
+  },
+
+  savedMarker: {
+    backgroundColor: '#7C3AED',
+  },
+  savedMarkerSelected: {
+    transform: [{ scale: 1.12 }],
+  },
+  savedPin: {
+    backgroundColor: '#7C3AED',
+  },
+  savedPinSelected: {
+    transform: [{ rotate: '45deg' }, { scale: 1.08 }],
+  },
 
   savedPlacePopup: { borderTopWidth: 3, borderTopColor: '#7C3AED' },
   savedPlacePopupHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 8, paddingRight: 24 },
   savedPlacePopupIcon: {
     width: 28, height: 28, borderRadius: 14,
     alignItems: 'center', justifyContent: 'center', marginRight: 10,
+  },
+  homeMapMarker: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: '#2563EB',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: '#FFFFFF',
+    shadowColor: '#000',
+    shadowOpacity: 0.18,
+    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 5,
+  },
+
+  homeMapMarkerSelected: {
+    backgroundColor: '#1D4ED8',
+  },
+
+  savedLocationMapMarker: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: '#7C3AED',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: '#FFFFFF',
+    shadowColor: '#000',
+    shadowOpacity: 0.18,
+    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 5,
+  },
+
+  savedLocationMapMarkerSelected: {
+    backgroundColor: '#5B21B6',
+  },
+  savedLocationsScroll: {
+    maxHeight: 56,
+  },
+  savedLocationsRow: {
+    paddingHorizontal: 16,
+    paddingTop: 8,
+    paddingBottom: 4,
+    gap: 8,
+    alignItems: 'center',
+  },
+  savedLocationChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: 'rgba(255,255,255,0.95)',
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    shadowColor: '#000',
+    shadowOpacity: 0.08,
+    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 2,
+  },
+  savedLocationChipSelected: {
+    backgroundColor: '#7C3AED',
+    borderColor: '#7C3AED',
+  },
+  savedLocationChipHome: {
+    backgroundColor: '#2563EB',
+    borderColor: '#2563EB',
+  },
+  savedLocationChipText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#374151',
+  },
+  savedLocationChipTextSelected: {
+    color: '#FFFFFF',
+  },
+  savedLocationsDropdown: {
+    marginHorizontal: 12,
+    marginTop: 2,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    shadowColor: '#000',
+    shadowOpacity: 0.12,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 6,
   },
 });
