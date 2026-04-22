@@ -31,11 +31,11 @@ GEOAPIFY_DETAILS_URL = "https://api.geoapify.com/v2/place-details"
 
 GEOAPIFY_CATEGORIES = {
     "hotels": "accommodation.hotel,accommodation.motel,accommodation.guest_house",
-    "grocery": "commercial.supermarket",
-    "gas": "commercial.gas",
-    "convenience": "commercial.convenience",
+    "grocery": "commercial.supermarket,commercial.food_and_drink.greengrocer",
+    "gas": "commercial.petrol_station",  # was "commercial.gas" — wrong category
+    "convenience": "commercial.convenience_store",  # also wrong: was "commercial.convenience"
     "hospital": "healthcare.hospital",
-    "pharmacy": "healthcare.pharmacy",
+    "pharmacy": "healthcare.pharmacy,commercial.health_and_beauty.pharmacy",
 }
 
 # Snap coordinates to ~1km grid to allow Redis reuse across nearby users
@@ -853,12 +853,12 @@ async def get_nearby_places(
         )
 
 
-    limit = max(1, min(limit, 50))
+    limit = max(1, min(limit, 100))
 
     # Snap coordinates to ~1km grid to share cache across nearby users
     snapped_lat = round(lat, COORD_PRECISION)
     snapped_lon = round(lon, COORD_PRECISION)
-    cache_key = f"ashguard:places:{type}:{snapped_lat}:{snapped_lon}:{radius}"
+    cache_key = f"ashguard:places:{type}:{snapped_lat}:{snapped_lon}:{radius}:{limit}"
 
     # Check and call the cache first, to reduce multiple API calls to Geoapify
     try:
