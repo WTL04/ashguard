@@ -37,19 +37,16 @@ type LatLng = {
   longitude: number;
 };
 
-type PhotonFeature = {
-  geometry?: {
-    coordinates?: [number, number];
-  };
-  properties?: {
-    name?: string;
-    street?: string;
-    housenumber?: string;
-    city?: string;
-    state?: string;
-    country?: string;
-    postcode?: string;
-  };
+// Mapbox token — add EXPO_PUBLIC_MAPBOX_TOKEN=pk.your_token_here to your .env
+const MAPBOX_TOKEN = process.env.EXPO_PUBLIC_MAPBOX_TOKEN ?? '';
+
+// Bias autocomplete toward Southern California
+const MAPBOX_PROXIMITY = '-118.2437,34.0522';
+
+type MapboxFeature = {
+  id: string;
+  place_name: string;
+  center: [number, number]; // [longitude, latitude]
 };
 
 type AddressSuggestion = {
@@ -79,12 +76,7 @@ const PANEL_TOTAL_HEIGHT = PANEL_VISIBLE_HEIGHT + PANEL_OVERHANG;
 const SHEET_EXPANDED = 0;
 const SHEET_COLLAPSED = PANEL_VISIBLE_HEIGHT - 68;
 
-function buildPhotonLabel(feature: PhotonFeature) {
-  const p = feature.properties ?? {};
-  const line1 = [p.name, p.street, p.housenumber].filter(Boolean).join(' ');
-  const line2 = [p.city, p.state, p.postcode, p.country].filter(Boolean).join(', ');
-  return [line1, line2].filter(Boolean).join(', ') || 'Selected meetup location';
-}
+// Mapbox returns place_name as a clean, full address string — no helper needed.
 
 function buildPlaceholderMembers(center: LatLng): PlaceholderMember[] {
   return [
@@ -291,34 +283,42 @@ export default function LocationMeetupScreen() {
     animateTo({ latitude: lat, longitude: lng });
   };
 
-  const fetchPhotonSuggestions = async (input: string) => {
+  const fetchMapboxSuggestions = async (input: string) => {
     setSearchText(input);
     if (!input.trim()) { setSuggestions([]); return; }
 
     try {
       setLoadingSuggestions(true);
-      const searchCenter = userCoords ?? FALLBACK_COORDS;
+      // Use live user location as proximity when available, fall back to SoCal center
+      const proximity = userCoords
+        ? `${userCoords[0]},${userCoords[1]}`
+        : MAPBOX_PROXIMITY;
       const url =
-        `https://photon.komoot.io/api/?q=${encodeURIComponent(input)}` +
-        `&limit=6&lat=${searchCenter[1]}&lon=${searchCenter[0]}`;
+        `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(input)}.json` +
+        `?access_token=${MAPBOX_TOKEN}` +
+        `&autocomplete=true` +
+        `&country=us` +
+        `&types=address,place,neighborhood,locality` +
+        `&proximity=${proximity}` +
+        `&limit=6`;
+
       const response = await fetch(url);
       const data = await response.json();
 
-      const nextSuggestions: AddressSuggestion[] = (data?.features ?? [])
-        .map((feature: PhotonFeature, index: number) => {
-          const c = feature.geometry?.coordinates;
-          if (!c || c.length < 2) return null;
-          return {
-            id: `${c[0]}_${c[1]}_${index}`,
-            label: buildPhotonLabel(feature),
-            coords: { latitude: c[1], longitude: c[0] },
-          };
+      const nextSuggestions: AddressSuggestion[] = (data?.features ?? []).map(
+        (feature: MapboxFeature) => ({
+          id:    feature.id,
+          label: feature.place_name,
+          coords: {
+            latitude:  feature.center[1],
+            longitude: feature.center[0],
+          },
         })
-        .filter(Boolean) as AddressSuggestion[];
+      );
 
       setSuggestions(nextSuggestions);
     } catch (error) {
-      console.log('Photon search error:', error);
+      console.log('Mapbox geocoding error:', error);
       setSuggestions([]);
     } finally {
       setLoadingSuggestions(false);
@@ -508,7 +508,7 @@ export default function LocationMeetupScreen() {
                   </View>
                   <TextInput
                     value={searchText}
-                    onChangeText={fetchPhotonSuggestions}
+                    onChangeText={fetchMapboxSuggestions}
                     style={styles.searchField}
                     placeholder="Enter address..."
                     placeholderTextColor="#BBAA99"
