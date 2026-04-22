@@ -6,6 +6,7 @@ const BASE_URL = 'http://54.193.8.1:8000';
 const NEARBY_RESOURCES_CACHE_PREFIX = 'ashguard:nearby_resources';
 const NEARBY_RESOURCES_CACHE_TTL_MS = 1000 * 60 * 15; // 15 minutes
 const COORDINATE_SNAP_DECIMALS = 3; // about 100m-ish grid
+const BASE_RADIUS = 25000; // 25km radius
 
 type NearbyResourcesCacheEntry = {
   cachedAt: number;
@@ -22,8 +23,6 @@ const buildNearbyResourcesCacheKey = (payload: {
   latitude: number;
   longitude: number;
   type: ResourceType;
-  radius: number;
-  limit: number;
 }) => {
   const snappedLat = snapCoordinate(payload.latitude);
   const snappedLon = snapCoordinate(payload.longitude);
@@ -33,8 +32,6 @@ const buildNearbyResourcesCacheKey = (payload: {
     payload.type,
     snappedLat,
     snappedLon,
-    Math.round(payload.radius),
-    Math.round(payload.limit),
   ].join(':');
 };
 
@@ -96,7 +93,7 @@ export const fetchNearbyResources = async (payload: {
     latitude,
     longitude,
     type,
-    radius = 10000,
+    radius = BASE_RADIUS,
     limit = 100,
     forceRefresh = false,
   } = payload;
@@ -138,7 +135,7 @@ export const fetchNearbyResources = async (payload: {
     lat: latitude.toString(),
     lon: longitude.toString(),
     type,
-    radius: Math.round(radius).toString(),
+    radius: radius.toString(),
     limit: Math.round(limit).toString(),
   });
 
