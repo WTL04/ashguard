@@ -14,12 +14,8 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
-import AsyncStorage from "@react-native-async-storage/async-storage";
-
-// ─── AsyncStorage keys (read these from your maps page) ─────────────────────
-export const HOME_ADDRESS_KEY = "ashguard_home_address";
-export const HOME_COORDS_KEY  = "ashguard_home_coords";
-export const SAVED_PLACES_KEY = "ashguard_saved_places";
+import { auth, db } from "@/lib/firebaseConfig";
+import { doc, getDoc, setDoc } from "firebase/firestore";
 
 // ─── Mapbox token ─────────────────────────────────────────────────────────────
 // Add this to your .env file:  EXPO_PUBLIC_MAPBOX_TOKEN=pk.your_token_here
@@ -108,6 +104,35 @@ function useMapbox() {
   return { suggestions, loading, search, clear };
 }
 
+async function geocodeAddressWithMapbox(input: string): Promise<LatLng | null> {
+  const query = input.trim();
+  if (!query || !MAPBOX_TOKEN) return null;
+
+  try {
+    const url =
+      `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(query)}.json` +
+      `?access_token=${MAPBOX_TOKEN}` +
+      `&autocomplete=false` +
+      `&country=us` +
+      `&types=address,place,neighborhood,locality` +
+      `&proximity=${PROXIMITY}` +
+      `&limit=1`;
+
+    const res = await fetch(url);
+    const data = await res.json();
+    const feature = data?.features?.[0] as MapboxFeature | undefined;
+
+    if (!feature?.center) return null;
+
+    return {
+      latitude: feature.center[1],
+      longitude: feature.center[0],
+    };
+  } catch {
+    return null;
+  }
+}
+
 // ─── Screen ───────────────────────────────────────────────────────────────────
 export default function PlacesScreen() {
   const router = useRouter();
@@ -122,7 +147,7 @@ export default function PlacesScreen() {
 
   // ── Home ──
   const [homeModalOpen, setHomeModalOpen]                       = useState(false);
-  const [home, setHome]                                         = useState("123 Street, Los Angeles, CA");
+  const [home, setHome]                                         = useState("set address");
   const [homeCoords, setHomeCoords]                             = useState<LatLng | null>(null);
   const [homeDraft, setHomeDraft]                               = useState(home);
   const [homeCoordsFromSuggestion, setHomeCoordsFromSuggestion] = useState<LatLng | null>(null);
@@ -137,38 +162,81 @@ export default function PlacesScreen() {
   const savedMapbox = useMapbox();
 
   const [savedPlaces, setSavedPlaces] = useState<SavedPlace[]>([
-    { id: "1", nickname: "Insurance Hospital", address: "123 Street, Los Angeles, CA", coords: null },
-    { id: "2", nickname: "Nearest Food Bank",  address: "123 Court, Ventura, CA",      coords: null },
+    { id: "1", nickname: "set nickname", address: "set address", coords: null },
   ]);
 
-  // ── Load persisted data on mount ──
   useEffect(() => {
-    (async () => {
+    const loadUserPlaces = async () => {
       try {
-        const [storedHome, storedHomeCoords, storedPlaces] = await Promise.all([
-          AsyncStorage.getItem(HOME_ADDRESS_KEY),
-          AsyncStorage.getItem(HOME_COORDS_KEY),
-          AsyncStorage.getItem(SAVED_PLACES_KEY),
-        ]);
-        if (storedHome)       setHome(storedHome);
-        if (storedHomeCoords) setHomeCoords(JSON.parse(storedHomeCoords));
-        if (storedPlaces)     setSavedPlaces(JSON.parse(storedPlaces));
-      } catch { /* ignore */ }
-    })();
+        const user = auth.currentUser;
+        if (!user) {
+          setHome("");
+          setHomeCoords(null);
+          setSavedPlaces([]);
+          return;
+        }
+
+        const userRef = doc(db, "users", user.uid);
+        const snapshot = await getDoc(userRef);
+
+        if (!snapshot.exists()) {
+          setHome("");
+          setHomeCoords(null);
+          setSavedPlaces([]);
+          return;
+        }
+
+        const data = snapshot.data();
+
+        setHome(data.homeAddress || "");
+        setHomeCoords(data.homeCoords || null);
+        setSavedPlaces(Array.isArray(data.savedPlaces) ? data.savedPlaces : []);
+      } catch (error) {
+        console.error("Error loading user places:", error);
+        setHome("");
+        setHomeCoords(null);
+        setSavedPlaces([]);
+      }
+    };
+
+    loadUserPlaces();
   }, []);
 
-  // ── Persist helpers ──
   async function persistHome(address: string, coords: LatLng | null) {
     try {
-      await AsyncStorage.setItem(HOME_ADDRESS_KEY, address);
-      if (coords) await AsyncStorage.setItem(HOME_COORDS_KEY, JSON.stringify(coords));
-    } catch { /* ignore */ }
+      const user = auth.currentUser;
+      if (!user) return;
+
+      const userRef = doc(db, "users", user.uid);
+      await setDoc(
+        userRef,
+        {
+          homeAddress: address || "",
+          homeCoords: coords ?? null,
+        },
+        { merge: true }
+      );
+    } catch (error) {
+      console.error("Error saving home:", error);
+    }
   }
 
   async function persistSavedPlaces(places: SavedPlace[]) {
     try {
-      await AsyncStorage.setItem(SAVED_PLACES_KEY, JSON.stringify(places));
-    } catch { /* ignore */ }
+      const user = auth.currentUser;
+      if (!user) return;
+
+      const userRef = doc(db, "users", user.uid);
+      await setDoc(
+        userRef,
+        {
+          savedPlaces: places ?? [],
+        },
+        { merge: true }
+      );
+    } catch (error) {
+      console.error("Error saving saved places:", error);
+    }
   }
 
   // ─── Home modal ───────────────────────────────────────────────────────────
@@ -185,13 +253,25 @@ export default function PlacesScreen() {
     Keyboard.dismiss();
   }
 
-  function saveHome() {
+  async function saveHome() {
     const trimmed = homeDraft.trim();
-    if (!trimmed) return;
+
+    if (!trimmed) {
+      setHome("");
+      setHomeCoords(null);
+      await persistHome("", null);
+      closeHomeModal();
+      return;
+    }
+
+    const coords =
+      homeCoordsFromSuggestion ??
+      (trimmed === home ? homeCoords : null) ??
+      await geocodeAddressWithMapbox(trimmed);
+
     setHome(trimmed);
-    const coords = homeCoordsFromSuggestion;
     setHomeCoords(coords);
-    persistHome(trimmed, coords);
+    await persistHome(trimmed, coords);
     closeHomeModal();
   }
 
@@ -221,26 +301,35 @@ export default function PlacesScreen() {
     setSavedModalOpen(true);
   }
 
-  function saveSavedPlace() {
+  async function saveSavedPlace() {
     const nick = nicknameDraft.trim();
     const addr = addressQuery.trim();
     if (!nick || !addr) return;
+
+    const existingPlace = editingId
+      ? savedPlaces.find((p) => p.id === editingId) ?? null
+      : null;
+
+    const coords =
+      addressCoords ??
+      (existingPlace && existingPlace.address === addr ? existingPlace.coords : null) ??
+      await geocodeAddressWithMapbox(addr);
 
     let next: SavedPlace[];
     if (editingId) {
       next = savedPlaces.map((p) =>
         p.id === editingId
-          ? { ...p, nickname: nick, address: addr, coords: addressCoords }
+          ? { ...p, nickname: nick, address: addr, coords }
           : p
       );
     } else {
       next = [
         ...savedPlaces,
-        { id: String(Date.now()), nickname: nick, address: addr, coords: addressCoords },
+        { id: String(Date.now()), nickname: nick, address: addr, coords },
       ];
     }
     setSavedPlaces(next);
-    persistSavedPlaces(next);
+    await persistSavedPlaces(next);
     closeSavedModal();
   }
 
@@ -269,7 +358,9 @@ export default function PlacesScreen() {
         <View style={styles.cardRow}>
           <View style={{ flex: 1, marginRight: 8 }}>
             <Text style={styles.cardRowTitle}>Home</Text>
-            <Text style={styles.cardRowSub} numberOfLines={1}>{home}</Text>
+            <Text style={styles.cardRowSub} numberOfLines={1}>
+              {home || "No home address set"}
+            </Text>
           </View>
           <Pressable onPress={openHomeModal}>
             <Text style={styles.editText}>Edit</Text>
@@ -288,17 +379,21 @@ export default function PlacesScreen() {
               <Text style={styles.addBtnText}>+ Add Saved Place</Text>
             </Pressable>
 
-            {savedPlaces.map((p) => (
-              <View key={p.id} style={styles.savedRow}>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.savedNick}>{p.nickname}</Text>
-                  <Text style={styles.savedAddr}>{p.address}</Text>
+            {savedPlaces.length === 0 ? (
+              <Text style={styles.savedAddr}>No saved places yet</Text>
+            ) : (
+              savedPlaces.map((p) => (
+                <View key={p.id} style={styles.savedRow}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.savedNick}>{p.nickname}</Text>
+                    <Text style={styles.savedAddr}>{p.address}</Text>
+                  </View>
+                  <Pressable onPress={() => openEditSavedPlace(p)}>
+                    <Text style={styles.editText}>Edit</Text>
+                  </Pressable>
                 </View>
-                <Pressable onPress={() => openEditSavedPlace(p)}>
-                  <Text style={styles.editText}>Edit</Text>
-                </Pressable>
-              </View>
-            ))}
+              ))
+            )}
           </View>
         )}
       </View>
