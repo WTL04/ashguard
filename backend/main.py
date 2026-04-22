@@ -30,12 +30,12 @@ GEOAPIFY_PLACES_URL = "https://api.geoapify.com/v2/places"
 GEOAPIFY_DETAILS_URL = "https://api.geoapify.com/v2/place-details"
 
 GEOAPIFY_CATEGORIES = {
-    "hotels": "accommodation.hotel,accommodation.motel,accommodation.guest_house",
-    "grocery": "commercial.supermarket,commercial.food_and_drink.greengrocer",
-    "gas": "commercial.petrol_station",  # was "commercial.gas" — wrong category
-    "convenience": "commercial.convenience_store",  # also wrong: was "commercial.convenience"
-    "hospital": "healthcare.hospital",
-    "pharmacy": "healthcare.pharmacy,commercial.health_and_beauty.pharmacy",
+    "hotels":      "accommodation.hotel,accommodation.motel,accommodation.guest_house",
+    "grocery":     "commercial.supermarket",
+    "gas":         "service.vehicle.fuel",
+    "convenience": "commercial.convenience",
+    "hospital":    "healthcare.hospital",
+    "pharmacy":    "healthcare.pharmacy",
 }
 
 # Snap coordinates to ~1km grid to allow Redis reuse across nearby users
