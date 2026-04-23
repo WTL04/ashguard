@@ -11,7 +11,6 @@ import {
 import BottomSheet, { BottomSheetFlatList } from "@gorhom/bottom-sheet";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import Slider from "@react-native-community/slider";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -45,6 +44,8 @@ const RESOURCE_TYPES: { type: ResourceType; label: string; icon: keyof typeof Io
   { type: "hotels",      label: "Hotels",      icon: "bed-outline" },
   { type: "convenience", label: "Convenience", icon: "storefront-outline" },
 ];
+const RADIUS_PRESETS_MI = [1, 5, 10, 25] as const;
+const MILES_TO_METERS = 1609;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -112,9 +113,6 @@ export default function ResourceBottomSheet({
     const insets = useSafeAreaInsets();
 
     const milesValue = Math.round(distanceRadius / 1609.34);
-    const MIN_MILES = 1;
-    const MAX_MILES = 50;
-    const MILES_TO_METERS = 1609;
     const selectedPlace = places.find((p) => p.id === selectedPlaceId);
 
   useEffect(() => {
@@ -237,20 +235,30 @@ export default function ResourceBottomSheet({
             <Text style={styles.sliderLabel}>Radius</Text>
             <Text style={styles.sliderValue}>{milesValue} mi</Text>
           </View>
-          <Slider
-            style={styles.slider}
-            minimumValue={MIN_MILES * MILES_TO_METERS}
-            maximumValue={MAX_MILES * MILES_TO_METERS}
-            step={MILES_TO_METERS}
-            value={distanceRadius}
-            onValueChange={onChangeDistanceRadius}
-            minimumTrackTintColor="#F58500"
-            maximumTrackTintColor="#E5E7EB"
-            thumbTintColor="#F58500"
-          />
-          <View style={styles.sliderRange}>
-            <Text style={styles.sliderRangeText}>1 mi</Text>
-            <Text style={styles.sliderRangeText}>{MAX_MILES} mi</Text>
+
+          <View style={styles.radiusPresetRow}>
+            {RADIUS_PRESETS_MI.map((miles) => {
+              const meters = miles * MILES_TO_METERS;
+              const active = distanceRadius === meters;
+
+              return (
+                <TouchableOpacity
+                  key={miles}
+                  style={[styles.radiusPresetButton, active && styles.radiusPresetButtonActive]}
+                  onPress={() => onChangeDistanceRadius(meters)}
+                  activeOpacity={0.8}
+                >
+                  <Text
+                    style={[
+                      styles.radiusPresetButtonText,
+                      active && styles.radiusPresetButtonTextActive,
+                    ]}
+                  >
+                    {miles} mi
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
           </View>
         </View>
       </View>
@@ -515,19 +523,6 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     color: "#F58500",
   },
-  slider: {
-    width: "100%",
-    height: 36,
-    marginVertical: -4,
-  },
-  sliderRange: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-  },
-  sliderRangeText: {
-    fontSize: 10,
-    color: "#D1D5DB",
-  },
 
   // ── List ──
   listContent: {
@@ -641,5 +636,35 @@ const styles = StyleSheet.create({
   emptySubtext: {
     fontSize: 12,
     color: "#9CA3AF",
+  },
+  radiusPresetRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginTop: 10,
+  },
+
+  radiusPresetButton: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: "#F3F4F6",
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+  },
+
+  radiusPresetButtonActive: {
+    backgroundColor: "#F58500",
+    borderColor: "#F58500",
+  },
+
+  radiusPresetButtonText: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: "#374151",
+  },
+
+  radiusPresetButtonTextActive: {
+    color: "#FFFFFF",
   },
 });
