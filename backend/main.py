@@ -30,12 +30,12 @@ GEOAPIFY_PLACES_URL = "https://api.geoapify.com/v2/places"
 GEOAPIFY_DETAILS_URL = "https://api.geoapify.com/v2/place-details"
 
 GEOAPIFY_CATEGORIES = {
-    "hotels":      "accommodation.hotel,accommodation.motel,accommodation.guest_house",
-    "grocery":     "commercial.supermarket",
-    "gas":         "service.vehicle.fuel",
+    "hotels": "accommodation.hotel,accommodation.motel,accommodation.guest_house",
+    "grocery": "commercial.supermarket",
+    "gas": "service.vehicle.fuel",
     "convenience": "commercial.convenience",
-    "hospital":    "healthcare.hospital",
-    "pharmacy":    "healthcare.pharmacy",
+    "hospital": "healthcare.hospital",
+    "pharmacy": "healthcare.pharmacy",
 }
 
 # Snap coordinates to ~1km grid to allow Redis reuse across nearby users
@@ -852,7 +852,6 @@ async def get_nearby_places(
             },
         )
 
-
     limit = max(1, min(limit, 100))
 
     # Snap coordinates to ~1km grid to share cache across nearby users
@@ -1072,3 +1071,4 @@ async def get_self_reports():
             status_code=500,
             content={"detail": f"Failed to fetch self reports: {str(e)}"},
         )
+
