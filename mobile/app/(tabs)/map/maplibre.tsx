@@ -38,6 +38,8 @@ import { collection, query, where, onSnapshot, doc, getDoc } from 'firebase/fire
 import { auth, db } from '@/lib/firebaseConfig';
 
 import ResourceBottomSheet from './resourcesSlider';
+import SearchBottomSheet from './searchSheet';
+import { useMapboxSearch, type MapboxSuggestion } from '@/lib/useMapboxSearch';
 import { useFocusEffect } from '@react-navigation/native';
 
 type UserLatLng = { latitude: number; longitude: number };
@@ -307,8 +309,13 @@ export default function MapLibre() {
   const stableCoordsRef = useRef<[number, number] | null>(null);
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastKnownResourcesCountRef = useRef<number>(0);
+
+  // ── Search state ────────────────────────────────────────────────────────────
   const [search, setSearch] = useState('');
-  const [isSearchFocused, setIsSearchFocused] = useState(false);
+  const [searchSheetOpen, setSearchSheetOpen] = useState(false);
+
+  // Mapbox autocomplete hook — debounced, typed, ready to use
+  const { suggestions: searchSuggestions, loading: searchLoading, search: runSearch, clear: clearSearch } = useMapboxSearch();
 
   // Fire state
   const [hotspotsData, setHotspotsData] = useState<GeoJSON.FeatureCollection | null>(null);
@@ -620,9 +627,7 @@ export default function MapLibre() {
         const [longitude, latitude] = stableSearchCoords;
 
         if (resourceType === 'all') {
-          // Wave 1: highest-priority types — fetch immediately and render as soon as they land
           const criticalTypes: ResourceType[] = ['gas', 'pharmacy', 'grocery'];
-          // Wave 2: secondary types — fetched in parallel with wave 1 but processed after
           const secondaryTypes: ResourceType[] = ['hotels', 'convenience'];
 
           const fetchType = (type: ResourceType) =>
@@ -636,7 +641,6 @@ export default function MapLibre() {
               .then((data) => extractGeoapifyPlacesFromGeoJSON(data, stableSearchCoords))
               .catch(() => [] as NearbyPlace[]);
 
-          // Kick off ALL fetches simultaneously — no sequential blocking
           const criticalPromises = criticalTypes.map(fetchType);
           const secondaryPromises = secondaryTypes.map(fetchType);
           const hospitalPromise = Promise.resolve(
@@ -646,7 +650,6 @@ export default function MapLibre() {
             ).filter((p) => p.distanceMeters == null || p.distanceMeters <= distanceRadius)
           );
 
-          // Wave 1: render critical + hospitals as soon as they're ready
           const [criticalResults, hospitalCollection] = await Promise.all([
             Promise.all(criticalPromises),
             hospitalPromise,
@@ -680,14 +683,11 @@ export default function MapLibre() {
               },
             }));
 
-          // Render wave 1 immediately
           const wave1Places = mergePlaces([hospitalCollection, ...criticalResults]);
           setResourcesData({ type: 'FeatureCollection', features: toFeatures(wave1Places) });
           setNearbyPlaces(wave1Places);
           if (isResourcesMode) setSheetOpen(true);
 
-          // Wave 2: hotels + convenience were already in-flight, just await them now
-          // and merge into the existing results without a second loading spinner
           const secondaryResults = await Promise.all(secondaryPromises);
           const allPlaces = mergePlaces([wave1Places, ...secondaryResults]);
           setResourcesData({ type: 'FeatureCollection', features: toFeatures(allPlaces) });
@@ -957,6 +957,46 @@ export default function MapLibre() {
     }
   };
 
+  // ── Search handlers ─────────────────────────────────────────────────────────
+
+  const handleSearchTextChange = (text: string) => {
+    setSearch(text);
+    // Pass user's live coords for better proximity bias
+    runSearch(text, userCoords);
+  };
+
+  const handleSelectSuggestion = (suggestion: MapboxSuggestion) => {
+    const [lon, lat] = suggestion.coords;
+    setSearch(suggestion.shortLabel);
+    setSearchSheetOpen(false);
+    clearSearch();
+    clearSelections();
+    focusCameraOnCoordinate([lon, lat], 14);
+  };
+
+  const handleSelectSavedPlaceFromSearch = (location: {
+    id: string;
+    label: string;
+    icon: keyof typeof Ionicons.glyphMap;
+    coordinate: [number, number];
+    isHome?: boolean;
+  }) => {
+    clearSelections();
+    setSelectedSavedPlaceId(location.id);
+    focusCameraOnCoordinate(location.coordinate, 15);
+    setSearch(location.label);
+    setSearchSheetOpen(false);
+    clearSearch();
+  };
+
+  const handleSearchClose = () => {
+    setSearchSheetOpen(false);
+    clearSearch();
+    // Don't clear the search text — user may want to see what they searched
+  };
+
+  // ── Derived / memoized values ───────────────────────────────────────────────
+
   const visibleNearbyPlaces = useMemo(() => {
     if (resourceType === 'all') return nearbyPlaces;
 
@@ -1185,20 +1225,8 @@ export default function MapLibre() {
                   coordinate={coords}
                   onSelected={() => handleFirePress(feature)}
                 >
-                  <View
-                    style={{
-                      width: 24,
-                      height: 24,
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                    }}
-                  >
-                    <View
-                      style={[
-                        styles.prescribedMarker,
-                        selected && styles.prescribedMarkerSelected,
-                      ]}
-                    >
+                  <View style={{ width: 24, height: 24, alignItems: 'center', justifyContent: 'center' }}>
+                    <View style={[styles.prescribedMarker, selected && styles.prescribedMarkerSelected]}>
                       <Ionicons name="leaf" size={12} color="#FFFFFF" />
                     </View>
                   </View>
@@ -1267,20 +1295,8 @@ export default function MapLibre() {
                   coordinate={coords}
                   onSelected={() => handleStationPress(feature)}
                 >
-                  <View
-                    style={{
-                      width: 24,
-                      height: 24,
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                    }}
-                  >
-                    <View
-                      style={[
-                        styles.weatherMarker,
-                        selected && styles.weatherMarkerSelected,
-                      ]}
-                    >
+                  <View style={{ width: 24, height: 24, alignItems: 'center', justifyContent: 'center' }}>
+                    <View style={[styles.weatherMarker, selected && styles.weatherMarkerSelected]}>
                       <Ionicons name="partly-sunny" size={12} color="#FFFFFF" />
                     </View>
                   </View>
@@ -1308,100 +1324,59 @@ export default function MapLibre() {
                 coordinate={coords}
                 onSelected={() => handleResourcePress(feature)}
               >
-                <View
-                  style={{
-                    width: 22,
-                    height: 22,
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                  }}
-                >
-                  <View
-                    style={[
-                      styles.resourceMarker,
-                      selected
-                        ? styles.resourceMarkerSelected
-                        : styles.resourceMarkerDefault,
-                    ]}
-                  >
-                    <Ionicons
-                      name={getResourceMarkerIconName(resourceMarkerType)}
-                      size={11}
-                      color="#FFFFFF"
-                    />
+                <View style={{ width: 22, height: 22, alignItems: 'center', justifyContent: 'center' }}>
+                  <View style={[styles.resourceMarker, selected ? styles.resourceMarkerSelected : styles.resourceMarkerDefault]}>
+                    <Ionicons name={getResourceMarkerIconName(resourceMarkerType)} size={11} color="#FFFFFF" />
                   </View>
                 </View>
               </PointAnnotation>
             );
           })}
-          {/* Home pin */}
-          {homeCoords && (
+
+        {/* Home pin */}
+        {homeCoords && (
+          <PointAnnotation
+            key={`home-${selectedSavedPlaceId === '__home__' ? 'sel' : 'def'}`}
+            id="home-pin"
+            coordinate={[homeCoords.longitude, homeCoords.latitude]}
+            onSelected={() => {
+              clearSelections();
+              setSelectedSavedPlaceId('__home__');
+              focusCameraOnCoordinate([homeCoords.longitude, homeCoords.latitude], 15);
+            }}
+          >
+            <View style={{ width: 24, height: 24, alignItems: 'center', justifyContent: 'center' }}>
+              <View style={[styles.homeMapMarker, selectedSavedPlaceId === '__home__' && styles.homeMapMarkerSelected]}>
+                <Ionicons name="home" size={12} color="#FFFFFF" />
+              </View>
+            </View>
+          </PointAnnotation>
+        )}
+
+        {/* Saved place pins */}
+        {savedPlaces.filter((p) => p.coords != null).map((place) => {
+          const selected = selectedSavedPlaceId === place.id;
+
+          return (
             <PointAnnotation
-              key={`home-${selectedSavedPlaceId === '__home__' ? 'sel' : 'def'}`}
-              id="home-pin"
-              coordinate={[homeCoords.longitude, homeCoords.latitude]}
+              key={`saved-${place.id}-${selected ? 'sel' : 'def'}`}
+              id={`saved-${place.id}`}
+              coordinate={[place.coords!.longitude, place.coords!.latitude]}
               onSelected={() => {
                 clearSelections();
-                setSelectedSavedPlaceId('__home__');
-                focusCameraOnCoordinate([homeCoords.longitude, homeCoords.latitude], 15);
+                setSelectedSavedPlaceId(place.id);
+                focusCameraOnCoordinate([place.coords!.longitude, place.coords!.latitude], 15);
               }}
             >
-              <View
-                style={{
-                  width: 24,
-                  height: 24,
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                }}
-              >
-                <View
-                  style={[
-                    styles.homeMapMarker,
-                    selectedSavedPlaceId === '__home__' && styles.homeMapMarkerSelected,
-                  ]}
-                >
-                  <Ionicons name="home" size={12} color="#FFFFFF" />
+              <View style={{ width: 24, height: 24, alignItems: 'center', justifyContent: 'center' }}>
+                <View style={[styles.savedLocationMapMarker, selected && styles.savedLocationMapMarkerSelected]}>
+                  <Ionicons name="bookmark" size={12} color="#FFFFFF" />
                 </View>
               </View>
             </PointAnnotation>
-          )}
+          );
+        })}
 
-          {/* Saved place pins */}
-          {savedPlaces.filter((p) => p.coords != null).map((place) => {
-            const selected = selectedSavedPlaceId === place.id;
-
-            return (
-              <PointAnnotation
-                key={`saved-${place.id}-${selected ? 'sel' : 'def'}`}
-                id={`saved-${place.id}`}
-                coordinate={[place.coords!.longitude, place.coords!.latitude]}
-                onSelected={() => {
-                  clearSelections();
-                  setSelectedSavedPlaceId(place.id);
-                  focusCameraOnCoordinate([place.coords!.longitude, place.coords!.latitude], 15);
-                }}
-              >
-                <View
-                  style={{
-                    width: 24,
-                    height: 24,
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                  }}
-                >
-                  <View
-                    style={[
-                      styles.savedLocationMapMarker,
-                      selected && styles.savedLocationMapMarkerSelected,
-                    ]}
-                  >
-                    <Ionicons name="bookmark" size={12} color="#FFFFFF" />
-                  </View>
-                </View>
-              </PointAnnotation>
-            );
-          })}
-    
         {selfReportsData &&
           (selfReportsData.features ?? [])
             .filter((f): f is GeoJSON.Feature<GeoJSON.Point> => f.geometry?.type === 'Point')
@@ -1417,20 +1392,8 @@ export default function MapLibre() {
                   coordinate={coords}
                   onSelected={() => handleFirePress(feature)}
                 >
-                  <View
-                    style={{
-                      width: 24,
-                      height: 24,
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                    }}
-                  >
-                    <View
-                      style={[
-                        styles.selfReportMarker,
-                        selected && styles.selfReportMarkerSelected,
-                      ]}
-                    >
+                  <View style={{ width: 24, height: 24, alignItems: 'center', justifyContent: 'center' }}>
+                    <View style={[styles.selfReportMarker, selected && styles.selfReportMarkerSelected]}>
                       <Ionicons name="warning" size={12} color="#FFFFFF" />
                     </View>
                   </View>
@@ -1446,75 +1409,46 @@ export default function MapLibre() {
       )}
 
       <SafeAreaView style={styles.uiLayer} edges={['top']} pointerEvents="box-none">
+
+        {/* ── Search bar ────────────────────────────────────────────────────── */}
         <View style={styles.searchRow}>
-          <View style={styles.searchBox}>
+          <View style={[styles.searchBox, searchSheetOpen && styles.searchBoxFocused]}>
             <TextInput
               style={styles.searchInput}
               placeholder="Search fires, places, or resources"
               placeholderTextColor="#9CA3AF"
               value={search}
-              onChangeText={setSearch}
-              onFocus={() => setIsSearchFocused(true)}
+              onChangeText={handleSearchTextChange}
+              onFocus={() => setSearchSheetOpen(true)}
               onBlur={() => {
-                setTimeout(() => setIsSearchFocused(false), 150);
+                // Don't close on blur so user can tap suggestions
               }}
               returnKeyType="search"
+              onSubmitEditing={() => {
+                // Auto-select single result on keyboard submit
+                if (searchSuggestions.length === 1) {
+                  handleSelectSuggestion(searchSuggestions[0]);
+                }
+              }}
             />
-            <Ionicons name="search-outline" size={18} color="#9CA3AF" />
+            {search.length > 0 ? (
+              <TouchableOpacity
+                onPress={() => {
+                  setSearch('');
+                  clearSearch();
+                  setSearchSheetOpen(false);
+                }}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              >
+                <Ionicons name="close-circle" size={18} color="#9CA3AF" />
+              </TouchableOpacity>
+            ) : (
+              <Ionicons name="search-outline" size={18} color="#9CA3AF" />
+            )}
           </View>
         </View>
 
-        {isSearchFocused && savedMapLocations.length > 0 && (
-          <View style={styles.savedLocationsDropdown}>
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              keyboardShouldPersistTaps="handled"
-              contentContainerStyle={styles.savedLocationsRow}
-              style={styles.savedLocationsScroll}
-            >
-              {savedMapLocations.map((location) => {
-                const selected = selectedSavedPlaceId === location.id;
-
-                return (
-                  <TouchableOpacity
-                    key={location.id}
-                    style={[
-                      styles.savedLocationChip,
-                      selected && styles.savedLocationChipSelected,
-                      location.isHome && styles.savedLocationChipHome,
-                    ]}
-                    onPress={() => {
-                      clearSelections();
-                      setSelectedSavedPlaceId(location.id);
-                      focusCameraOnCoordinate(location.coordinate, 15);
-                      setSearch(location.label);
-                      setIsSearchFocused(false);
-                    }}
-                    activeOpacity={0.85}
-                  >
-                    <Ionicons
-                      name={location.icon}
-                      size={13}
-                      color={selected || location.isHome ? '#FFFFFF' : '#4B5563'}
-                      style={{ marginRight: 6 }}
-                    />
-                    <Text
-                      style={[
-                        styles.savedLocationChipText,
-                        (selected || location.isHome) && styles.savedLocationChipTextSelected,
-                      ]}
-                      numberOfLines={1}
-                    >
-                      {location.label}
-                    </Text>
-                  </TouchableOpacity>
-                );
-              })}
-            </ScrollView>
-          </View>
-        )}
-
+        {/* ── Filter chips — always visible, always in the same position ─────── */}
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
@@ -1561,7 +1495,7 @@ export default function MapLibre() {
                 style={[styles.chip, active && styles.chipActive]}
                 onPress={() => {
                   if (f.id !== 'resources') {
-                    clearSelections(); // only clear when leaving resources mode
+                    clearSelections();
                   }
                   setActiveFilter(f.id);
                   setIsResourcesMode(f.id === 'resources');
@@ -1588,11 +1522,7 @@ export default function MapLibre() {
                 )}
 
                 {isFireFilter && firesLoading && (
-                  <ActivityIndicator
-                    size="small"
-                    color={active ? '#fff' : Colors.primary}
-                    style={{ marginLeft: 4 }}
-                  />
+                  <ActivityIndicator size="small" color={active ? '#fff' : Colors.primary} style={{ marginLeft: 4 }} />
                 )}
 
                 {isWeatherFilter && !weatherLoading && !weatherError && badgeCount > 0 && (
@@ -1604,36 +1534,26 @@ export default function MapLibre() {
                 )}
 
                 {isWeatherFilter && weatherLoading && (
-                  <ActivityIndicator
-                    size="small"
-                    color={active ? '#fff' : Colors.primary}
-                    style={{ marginLeft: 4 }}
-                  />
+                  <ActivityIndicator size="small" color={active ? '#fff' : Colors.primary} style={{ marginLeft: 4 }} />
                 )}
 
-                {isResourceFilter &&
-                  !resourcesLoading &&
-                  !resourcesError &&
-                  badgeCount > 0 && (
-                    <View style={[badgeStyle, active && badgeActiveStyle]}>
-                      <Text style={[badgeTextStyle, active && styles.badgeTextActive]}>
-                        {badgeCount}
-                      </Text>
-                    </View>
-                  )}
+                {isResourceFilter && !resourcesLoading && !resourcesError && badgeCount > 0 && (
+                  <View style={[badgeStyle, active && badgeActiveStyle]}>
+                    <Text style={[badgeTextStyle, active && styles.badgeTextActive]}>
+                      {badgeCount}
+                    </Text>
+                  </View>
+                )}
 
                 {isResourceFilter && resourcesLoading && (
-                  <ActivityIndicator
-                    size="small"
-                    color={active ? '#fff' : Colors.primary}
-                    style={{ marginLeft: 4 }}
-                  />
+                  <ActivityIndicator size="small" color={active ? '#fff' : Colors.primary} style={{ marginLeft: 4 }} />
                 )}
               </TouchableOpacity>
             );
           })}
         </ScrollView>
 
+        {/* ── FAB buttons ───────────────────────────────────────────────────── */}
         <View style={styles.fab} pointerEvents="box-none">
           <TouchableOpacity
             style={styles.roundMapButton}
@@ -1665,14 +1585,12 @@ export default function MapLibre() {
           </TouchableOpacity>
         </View>
 
+        {/* ── Fire / hotspot popup ──────────────────────────────────────────── */}
         {selectedData && (
           <View style={styles.popup} pointerEvents="box-none">
             <TouchableOpacity
               style={[styles.popupClose, { padding: 8, marginRight: -8, marginTop: -8 }]}
-              onPress={() => {
-                setSelectedData(null);
-                setSelectedFireId(null);
-              }}
+              onPress={() => { setSelectedData(null); setSelectedFireId(null); }}
             >
               <Ionicons name="close" size={24} color="#374151" />
             </TouchableOpacity>
@@ -1695,85 +1613,55 @@ export default function MapLibre() {
                 ⚠️ Community report: {selectedData.properties.description || 'User-reported fire'}
               </Text>
             )}
-
             {!!selectedData.properties?.satellite && (
               <Text style={styles.popupDetail}>🛰️ Source: {selectedData.properties.satellite}</Text>
             )}
-
             {!!selectedData.properties?.confidence && (
               <Text style={styles.popupDetail}>
                 🎯 Confidence:{' '}
-                {CONFIDENCE_MAP[selectedData.properties.confidence] ??
-                  selectedData.properties.confidence}
+                {CONFIDENCE_MAP[selectedData.properties.confidence] ?? selectedData.properties.confidence}
               </Text>
             )}
-
             {!!selectedData.properties?.acq_date && (
               <Text style={styles.popupDetail}>📅 Acquired: {selectedData.properties.acq_date}</Text>
             )}
-
             {!!selectedData.properties?.name && (
               <Text style={styles.popupDetail}>🌿 Name: {selectedData.properties.name}</Text>
             )}
-
             {!!selectedData.properties?.prescribed_date_start && (
-              <Text style={styles.popupDetail}>
-                🗓️ Start Date: {selectedData.properties.prescribed_date_start}
-              </Text>
+              <Text style={styles.popupDetail}>🗓️ Start Date: {selectedData.properties.prescribed_date_start}</Text>
             )}
-
             {!!selectedData.properties?.incident_name && (
-              <Text style={styles.popupDetail}>
-                🔥 Incident Name: {selectedData.properties.incident_name}
-              </Text>
+              <Text style={styles.popupDetail}>🔥 Incident Name: {selectedData.properties.incident_name}</Text>
             )}
-
             {!!selectedData.properties?.incident_number && (
-              <Text style={styles.popupDetail}>
-                📋 Incident #: {selectedData.properties.incident_number}
-              </Text>
+              <Text style={styles.popupDetail}>📋 Incident #: {selectedData.properties.incident_number}</Text>
             )}
-
             {!!selectedData.properties?.source && selectedData.properties.source !== 'user' && (
               <Text style={styles.popupDetail}>📡 Source: {selectedData.properties.source}</Text>
             )}
-
             {!!selectedData.properties?.mission && (
               <Text style={styles.popupDetail}>🎯 Mission: {selectedData.properties.mission}</Text>
             )}
-
             {!!selectedData.properties?.displayStatus && (
-              <Text style={styles.popupDetail}>
-                📊 Status: {selectedData.properties.displayStatus}
-              </Text>
+              <Text style={styles.popupDetail}>📊 Status: {selectedData.properties.displayStatus}</Text>
             )}
-
-            {!!selectedData.properties?.description &&
-              selectedData.properties.source !== 'user' && (
-                <Text style={styles.popupDetail}>
-                  📝 Description: {selectedData.properties.description}
-                </Text>
-              )}
-
+            {!!selectedData.properties?.description && selectedData.properties.source !== 'user' && (
+              <Text style={styles.popupDetail}>📝 Description: {selectedData.properties.description}</Text>
+            )}
             {selectedData.properties?.area_acres && (
-              <Text style={styles.popupDetail}>
-                📐 Area: {selectedData.properties.area_acres.toFixed(3)} acres
-              </Text>
+              <Text style={styles.popupDetail}>📐 Area: {selectedData.properties.area_acres.toFixed(3)} acres</Text>
             )}
-
             {selectedData.properties?.FireDiscoveryDate && (
               <Text style={styles.popupDetail}>
-                🗓️ Discovered:{' '}
-                {new Date(selectedData.properties.FireDiscoveryDate).toLocaleDateString()}
+                🗓️ Discovered: {new Date(selectedData.properties.FireDiscoveryDate).toLocaleDateString()}
               </Text>
             )}
-
             {selectedData.properties?.CreationDate && (
               <Text style={styles.popupDetail}>
                 📅 Created: {new Date(selectedData.properties.CreationDate).toLocaleDateString()}
               </Text>
             )}
-
             {selectedData.properties?.EditDate && (
               <Text style={styles.popupDetail}>
                 ✏️ Updated: {new Date(selectedData.properties.EditDate).toLocaleDateString()}
@@ -1782,14 +1670,12 @@ export default function MapLibre() {
           </View>
         )}
 
+        {/* ── Weather station popup ─────────────────────────────────────────── */}
         {selectedStation && (
           <View style={styles.popup} pointerEvents="box-none">
             <TouchableOpacity
               style={[styles.popupClose, { padding: 8, marginRight: -8, marginTop: -8 }]}
-              onPress={() => {
-                setSelectedStation(null);
-                setSelectedWeatherId(null);
-              }}
+              onPress={() => { setSelectedStation(null); setSelectedWeatherId(null); }}
             >
               <Ionicons name="close" size={24} color="#374151" />
             </TouchableOpacity>
@@ -1797,37 +1683,20 @@ export default function MapLibre() {
             <Text style={styles.popupTitle}>
               🌤️ {selectedStation.properties?.stationName ?? selectedStation.properties?.stationId}
             </Text>
-
             <View style={styles.popupDivider} />
-
-            <Text style={styles.popupDetail}>
-              📡 Station ID: {selectedStation.properties?.stationId}
-            </Text>
-
+            <Text style={styles.popupDetail}>📡 Station ID: {selectedStation.properties?.stationId}</Text>
             {selectedStation.properties?.temperature != null && (
-              <Text style={styles.popupDetail}>
-                🌡️ Temperature: {celsiusToFahrenheit(selectedStation.properties.temperature)}
-              </Text>
+              <Text style={styles.popupDetail}>🌡️ Temperature: {celsiusToFahrenheit(selectedStation.properties.temperature)}</Text>
             )}
-
             {selectedStation.properties?.relativeHumidity != null && (
-              <Text style={styles.popupDetail}>
-                💧 Humidity: {selectedStation.properties.relativeHumidity.toFixed(1)} %
-              </Text>
+              <Text style={styles.popupDetail}>💧 Humidity: {selectedStation.properties.relativeHumidity.toFixed(1)} %</Text>
             )}
-
             {selectedStation.properties?.dewpoint != null && (
-              <Text style={styles.popupDetail}>
-                🌫️ Dew Point: {celsiusToFahrenheit(selectedStation.properties.dewpoint)}
-              </Text>
+              <Text style={styles.popupDetail}>🌫️ Dew Point: {celsiusToFahrenheit(selectedStation.properties.dewpoint)}</Text>
             )}
-
             {selectedStation.properties?.windSpeed != null && (
-              <Text style={styles.popupDetail}>
-                💨 Wind Speed: {kmhToMph(selectedStation.properties.windSpeed)}
-              </Text>
+              <Text style={styles.popupDetail}>💨 Wind Speed: {kmhToMph(selectedStation.properties.windSpeed)}</Text>
             )}
-
             {selectedStation.properties?.timestamp && (
               <Text style={styles.popupDetail}>
                 🕐 Updated: {new Date(selectedStation.properties.timestamp).toLocaleString()}
@@ -1836,9 +1705,13 @@ export default function MapLibre() {
           </View>
         )}
 
+        {/* ── Saved place popup ─────────────────────────────────────────────── */}
         {selectedSavedPlaceId && (
           <View style={[styles.popup, styles.savedPlacePopup]} pointerEvents="box-none">
-            <TouchableOpacity style={[styles.popupClose, { padding: 8, marginRight: -8, marginTop: -8 }]} onPress={() => setSelectedSavedPlaceId(null)}>
+            <TouchableOpacity
+              style={[styles.popupClose, { padding: 8, marginRight: -8, marginTop: -8 }]}
+              onPress={() => setSelectedSavedPlaceId(null)}
+            >
               <Ionicons name="close" size={24} color="#374151" />
             </TouchableOpacity>
             {selectedSavedPlaceId === '__home__' ? (
@@ -1851,7 +1724,11 @@ export default function MapLibre() {
                 </View>
                 <View style={styles.popupDivider} />
                 <Text style={styles.popupDetail}>📍 {homeAddress}</Text>
-                {homeCoords && <Text style={styles.popupDetail}>🧭 {homeCoords.latitude.toFixed(5)}, {homeCoords.longitude.toFixed(5)}</Text>}
+                {homeCoords && (
+                  <Text style={styles.popupDetail}>
+                    🧭 {homeCoords.latitude.toFixed(5)}, {homeCoords.longitude.toFixed(5)}
+                  </Text>
+                )}
               </>
             ) : (() => {
               const place = savedPlaces.find(p => p.id === selectedSavedPlaceId);
@@ -1866,13 +1743,18 @@ export default function MapLibre() {
                   </View>
                   <View style={styles.popupDivider} />
                   <Text style={styles.popupDetail}>📍 {place.address}</Text>
-                  {place.coords && <Text style={styles.popupDetail}>🧭 {place.coords.latitude.toFixed(5)}, {place.coords.longitude.toFixed(5)}</Text>}
+                  {place.coords && (
+                    <Text style={styles.popupDetail}>
+                      🧭 {place.coords.latitude.toFixed(5)}, {place.coords.longitude.toFixed(5)}
+                    </Text>
+                  )}
                 </>
               );
             })()}
           </View>
         )}
 
+        {/* ── Report fire modal ─────────────────────────────────────────────── */}
         <Modal
           visible={reportModalVisible}
           transparent
@@ -1920,6 +1802,7 @@ export default function MapLibre() {
         </Modal>
       </SafeAreaView>
 
+      {/* ── Resource bottom sheet ──────────────────────────────────────────── */}
       <ResourceBottomSheet
         visible={sheetOpen}
         peekOnly={!!(selectedData || selectedStation)}
@@ -1933,6 +1816,19 @@ export default function MapLibre() {
         onChangeDistanceRadius={setDistanceRadius}
         onSelectPlace={handleSelectPlaceFromSheet}
         onClose={() => setSheetOpen(false)}
+      />
+
+      {/* ── Search bottom sheet ────────────────────────────────────────────── */}
+      <SearchBottomSheet
+        visible={searchSheetOpen}
+        searchText={search}
+        suggestions={searchSuggestions}
+        loading={searchLoading}
+        savedLocations={savedMapLocations}
+        selectedSavedPlaceId={selectedSavedPlaceId}
+        onSelectSavedPlace={handleSelectSavedPlaceFromSearch}
+        onSelectSuggestion={handleSelectSuggestion}
+        onClose={handleSearchClose}
       />
     </View>
   );
@@ -1956,6 +1852,7 @@ const styles = StyleSheet.create({
     flex: 1,
   },
 
+  // ── Search bar ──────────────────────────────────────────────────────────────
   searchRow: {
     paddingHorizontal: 12,
     paddingTop: 8,
@@ -1973,6 +1870,13 @@ const styles = StyleSheet.create({
     shadowRadius: 8,
     shadowOffset: { width: 0, height: 2 },
     elevation: 4,
+    borderWidth: 1.5,
+    borderColor: 'transparent',
+  },
+  searchBoxFocused: {
+    borderColor: '#F58500',
+    shadowOpacity: 0.15,
+    shadowRadius: 10,
   },
   searchInput: {
     flex: 1,
@@ -1981,8 +1885,10 @@ const styles = StyleSheet.create({
     padding: 0,
   },
 
+  // ── Filter chips — always in fixed position below search bar ────────────────
   filtersScroll: {
     flexGrow: 0,
+    zIndex: 10,
   },
   filtersRow: {
     paddingHorizontal: 12,
@@ -2223,12 +2129,8 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 2 },
     elevation: 5,
   },
-  resourceMarkerDefault: {
-    backgroundColor: '#10B981',
-  },
-  resourceMarkerSelected: {
-    backgroundColor: '#065F46',
-  },
+  resourceMarkerDefault: { backgroundColor: '#10B981' },
+  resourceMarkerSelected: { backgroundColor: '#065F46' },
 
   prescribedMarker: {
     width: 22,
@@ -2245,9 +2147,7 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 2 },
     elevation: 5,
   },
-  prescribedMarkerSelected: {
-    backgroundColor: '#5B21B6',
-  },
+  prescribedMarkerSelected: { backgroundColor: '#5B21B6' },
 
   weatherMarker: {
     width: 22,
@@ -2264,9 +2164,7 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 2 },
     elevation: 5,
   },
-  weatherMarkerSelected: {
-    backgroundColor: '#1D4ED8',
-  },
+  weatherMarkerSelected: { backgroundColor: '#1D4ED8' },
 
   selfReportMarker: {
     width: 22,
@@ -2283,14 +2181,12 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 2 },
     elevation: 5,
   },
-  selfReportMarkerSelected: {
-    backgroundColor: '#B45309',
-  },
+  selfReportMarkerSelected: { backgroundColor: '#B45309' },
+
   savedPlaceAnnotation: {
     alignItems: 'center',
     justifyContent: 'center',
   },
-
   savedPlaceMarker: {
     width: 36,
     height: 36,
@@ -2305,7 +2201,6 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 3 },
     elevation: 5,
   },
-
   markerPin: {
     width: 10,
     height: 10,
@@ -2315,32 +2210,14 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     borderColor: '#FFFFFF',
   },
-
-  homeMarker: {
-    backgroundColor: '#2563EB',
-  },
-  homeMarkerSelected: {
-    transform: [{ scale: 1.12 }],
-  },
-  homePin: {
-    backgroundColor: '#2563EB',
-  },
-  homePinSelected: {
-    transform: [{ rotate: '45deg' }, { scale: 1.08 }],
-  },
-
-  savedMarker: {
-    backgroundColor: '#7C3AED',
-  },
-  savedMarkerSelected: {
-    transform: [{ scale: 1.12 }],
-  },
-  savedPin: {
-    backgroundColor: '#7C3AED',
-  },
-  savedPinSelected: {
-    transform: [{ rotate: '45deg' }, { scale: 1.08 }],
-  },
+  homeMarker: { backgroundColor: '#2563EB' },
+  homeMarkerSelected: { transform: [{ scale: 1.12 }] },
+  homePin: { backgroundColor: '#2563EB' },
+  homePinSelected: { transform: [{ rotate: '45deg' }, { scale: 1.08 }] },
+  savedMarker: { backgroundColor: '#7C3AED' },
+  savedMarkerSelected: { transform: [{ scale: 1.12 }] },
+  savedPin: { backgroundColor: '#7C3AED' },
+  savedPinSelected: { transform: [{ rotate: '45deg' }, { scale: 1.08 }] },
 
   savedPlacePopup: { borderTopWidth: 3, borderTopColor: '#7C3AED' },
   savedPlacePopupHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 8, paddingRight: 24 },
@@ -2348,6 +2225,7 @@ const styles = StyleSheet.create({
     width: 28, height: 28, borderRadius: 14,
     alignItems: 'center', justifyContent: 'center', marginRight: 10,
   },
+
   homeMapMarker: {
     width: 22,
     height: 22,
@@ -2363,10 +2241,7 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 2 },
     elevation: 5,
   },
-
-  homeMapMarkerSelected: {
-    backgroundColor: '#1D4ED8',
-  },
+  homeMapMarkerSelected: { backgroundColor: '#1D4ED8' },
 
   savedLocationMapMarker: {
     width: 22,
@@ -2383,60 +2258,5 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 2 },
     elevation: 5,
   },
-
-  savedLocationMapMarkerSelected: {
-    backgroundColor: '#5B21B6',
-  },
-  savedLocationsScroll: {
-    maxHeight: 56,
-  },
-  savedLocationsRow: {
-    paddingHorizontal: 16,
-    paddingTop: 8,
-    paddingBottom: 4,
-    gap: 8,
-    alignItems: 'center',
-  },
-  savedLocationChip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 999,
-    backgroundColor: 'rgba(255,255,255,0.95)',
-    borderWidth: 1,
-    borderColor: '#E5E7EB',
-    shadowColor: '#000',
-    shadowOpacity: 0.08,
-    shadowRadius: 4,
-    shadowOffset: { width: 0, height: 2 },
-    elevation: 2,
-  },
-  savedLocationChipSelected: {
-    backgroundColor: '#7C3AED',
-    borderColor: '#7C3AED',
-  },
-  savedLocationChipHome: {
-    backgroundColor: '#2563EB',
-    borderColor: '#2563EB',
-  },
-  savedLocationChipText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#374151',
-  },
-  savedLocationChipTextSelected: {
-    color: '#FFFFFF',
-  },
-  savedLocationsDropdown: {
-    marginHorizontal: 12,
-    marginTop: 2,
-    backgroundColor: '#FFFFFF',
-    borderRadius: 16,
-    shadowColor: '#000',
-    shadowOpacity: 0.12,
-    shadowRadius: 10,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 6,
-  },
+  savedLocationMapMarkerSelected: { backgroundColor: '#5B21B6' },
 });
