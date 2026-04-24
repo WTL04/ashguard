@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   View,
   Text,
@@ -16,10 +16,10 @@ import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { auth, db } from "@/lib/firebaseConfig";
 import { doc, getDoc, setDoc } from "firebase/firestore";
-
-// ─── Mapbox token ─────────────────────────────────────────────────────────────
-// Add this to your .env file:  EXPO_PUBLIC_MAPBOX_TOKEN=pk.your_token_here
-const MAPBOX_TOKEN = process.env.EXPO_PUBLIC_MAPBOX_TOKEN ?? "";
+import {
+  useMapboxSearch,
+  geocodeAddressWithMapbox,
+} from "@/lib/useMapboxSearch";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 type LatLng = {
@@ -34,104 +34,10 @@ type SavedPlace = {
   coords: LatLng | null;
 };
 
-type AddressSuggestion = {
-  id: string;
-  label: string;
-  coords: LatLng;
-};
-
-// Mapbox Geocoding v5 feature shape (only fields we use)
-type MapboxFeature = {
-  id: string;
-  place_name: string;
-  center: [number, number]; // [longitude, latitude]
-};
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const TAN        = "#FDEFE7";
 const TAN_BORDER = "#F2D8C8";
-
-// Bias autocomplete results toward Southern California
-const PROXIMITY = "-118.2437,34.0522";
-
-// ─── useMapbox hook ───────────────────────────────────────────────────────────
-// Identical return shape to the old usePhoton hook — drop-in replacement.
-function useMapbox() {
-  const [suggestions, setSuggestions] = useState<AddressSuggestion[]>([]);
-  const [loading, setLoading]         = useState(false);
-  const debounceRef                   = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const search = useCallback((input: string) => {
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    if (!input.trim()) { setSuggestions([]); return; }
-
-    debounceRef.current = setTimeout(async () => {
-      try {
-        setLoading(true);
-        const url =
-          `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(input)}.json` +
-          `?access_token=${MAPBOX_TOKEN}` +
-          `&autocomplete=true` +
-          `&country=us` +
-          `&types=address,place,neighborhood,locality` +
-          `&proximity=${PROXIMITY}` +
-          `&limit=6`;
-
-        const res  = await fetch(url);
-        const data = await res.json();
-
-        const next: AddressSuggestion[] = (data?.features ?? []).map(
-          (f: MapboxFeature) => ({
-            id:    f.id,
-            label: f.place_name,          // Mapbox returns a clean, full address string
-            coords: {
-              latitude:  f.center[1],
-              longitude: f.center[0],
-            },
-          })
-        );
-        setSuggestions(next);
-      } catch {
-        setSuggestions([]);
-      } finally {
-        setLoading(false);
-      }
-    }, 300);
-  }, []);
-
-  const clear = useCallback(() => setSuggestions([]), []);
-
-  return { suggestions, loading, search, clear };
-}
-
-async function geocodeAddressWithMapbox(input: string): Promise<LatLng | null> {
-  const query = input.trim();
-  if (!query || !MAPBOX_TOKEN) return null;
-
-  try {
-    const url =
-      `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(query)}.json` +
-      `?access_token=${MAPBOX_TOKEN}` +
-      `&autocomplete=false` +
-      `&country=us` +
-      `&types=address,place,neighborhood,locality` +
-      `&proximity=${PROXIMITY}` +
-      `&limit=1`;
-
-    const res = await fetch(url);
-    const data = await res.json();
-    const feature = data?.features?.[0] as MapboxFeature | undefined;
-
-    if (!feature?.center) return null;
-
-    return {
-      latitude: feature.center[1],
-      longitude: feature.center[0],
-    };
-  } catch {
-    return null;
-  }
-}
 
 // ─── Screen ───────────────────────────────────────────────────────────────────
 export default function PlacesScreen() {
@@ -151,7 +57,7 @@ export default function PlacesScreen() {
   const [homeCoords, setHomeCoords]                             = useState<LatLng | null>(null);
   const [homeDraft, setHomeDraft]                               = useState(home);
   const [homeCoordsFromSuggestion, setHomeCoordsFromSuggestion] = useState<LatLng | null>(null);
-  const homeMapbox = useMapbox();
+  const homeMapbox = useMapboxSearch();
 
   // ── Saved Places ──
   const [savedModalOpen, setSavedModalOpen] = useState(false);
@@ -159,7 +65,7 @@ export default function PlacesScreen() {
   const [nicknameDraft, setNicknameDraft]   = useState("");
   const [addressQuery, setAddressQuery]     = useState("");
   const [addressCoords, setAddressCoords]   = useState<LatLng | null>(null);
-  const savedMapbox = useMapbox();
+  const savedMapbox = useMapboxSearch();
 
   const [savedPlaces, setSavedPlaces] = useState<SavedPlace[]>([
     { id: "1", nickname: "set nickname", address: "set address", coords: null },
@@ -464,15 +370,17 @@ export default function PlacesScreen() {
                   <View style={styles.suggestionBox}>
                     <FlatList
                       data={homeMapbox.suggestions}
-                      keyExtractor={(item) => item.id}
+                      keyExtractor={(item) => item.placeId}
                       keyboardShouldPersistTaps="handled"
                       style={{ maxHeight: 180 }}
                       renderItem={({ item }) => (
                         <Pressable
                           style={styles.suggestionRow}
                           onPress={() => {
-                            setHomeDraft(item.label);
-                            setHomeCoordsFromSuggestion(item.coords);
+                            const [longitude, latitude] = item.coords;
+
+                            setHomeDraft(item.shortLabel);
+                            setHomeCoordsFromSuggestion({ latitude, longitude });
                             homeMapbox.clear();
                             Keyboard.dismiss();
                           }}
@@ -550,15 +458,17 @@ export default function PlacesScreen() {
                   <View style={styles.suggestionBox}>
                     <FlatList
                       data={savedMapbox.suggestions}
-                      keyExtractor={(item) => item.id}
+                      keyExtractor={(item) => item.placeId}
                       keyboardShouldPersistTaps="handled"
                       style={{ maxHeight: 160 }}
                       renderItem={({ item }) => (
                         <Pressable
                           style={styles.suggestionRow}
                           onPress={() => {
-                            setAddressQuery(item.label);
-                            setAddressCoords(item.coords);
+                            const [longitude, latitude] = item.coords;
+
+                            setAddressQuery(item.shortLabel);
+                            setAddressCoords({ latitude, longitude });
                             savedMapbox.clear();
                             Keyboard.dismiss();
                           }}

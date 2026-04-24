@@ -71,6 +71,7 @@ export default function TabsLayout() {
       />
       {/* Hide resourcesSlider from being a tab */}
       <Tabs.Screen name="map/resourcesSlider" options={{ href: null }} />
+      <Tabs.Screen name="map/searchSheet" options={{ href: null }} />
     </Tabs>
   );
 }
