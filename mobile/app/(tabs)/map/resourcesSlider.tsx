@@ -30,6 +30,8 @@ type ResourceBottomSheetProps = {
   onChangeDistanceRadius: (radius: number) => void;
   onSelectPlace: (place: NearbyPlace) => void;
   onClose?: () => void;
+  /** Called when user drags the sheet above the hidden position */
+  onOpen?: () => void;
 };
 
 // ── Resource chip config ──────────────────────────────────────────────────────
@@ -107,6 +109,7 @@ export default function ResourceBottomSheet({
   onChangeDistanceRadius,
   onSelectPlace,
   onClose,
+  onOpen,
 }: ResourceBottomSheetProps) {
     const bottomSheetRef = useRef<BottomSheet>(null);
     const snapPoints = useMemo(() => [28, "36%", "52%", "68%", "90%"], []);
@@ -116,14 +119,15 @@ export default function ResourceBottomSheet({
     const selectedPlace = places.find((p) => p.id === selectedPlaceId);
 
   useEffect(() => {
-    if (peekOnly) {
+    if (!visible) {
+      // Close fully — snap to -1 means the sheet is off-screen
+      bottomSheetRef.current?.close();
+    } else if (peekOnly) {
       bottomSheetRef.current?.snapToIndex(0);
-    } else if (visible && selectedPlace) {
+    } else if (selectedPlace) {
       bottomSheetRef.current?.snapToIndex(1);
-    } else if (visible && isResourcesFilterActive) {
+    } else if (isResourcesFilterActive) {
       bottomSheetRef.current?.snapToIndex(2);
-    } else if (visible) {
-      bottomSheetRef.current?.snapToIndex(0);
     } else {
       bottomSheetRef.current?.snapToIndex(0);
     }
@@ -132,13 +136,17 @@ export default function ResourceBottomSheet({
   return (
     <BottomSheet
       ref={bottomSheetRef}
-      index={1}
+      index={-1}
       snapPoints={snapPoints}
       enablePanDownToClose={false}
       enableContentPanningGesture={false}
       topInset={insets.top}
       handleIndicatorStyle={styles.handle}
       backgroundStyle={styles.sheetBackground}
+      onChange={(index) => {
+        // User dragged sheet above closed position — sync parent state
+        if (index >= 0) onOpen?.();
+      }}
     >
       <View style={styles.header}>
         <Text style={styles.title}>Nearby Resources</Text>

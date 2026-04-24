@@ -10,6 +10,7 @@ import {
   ActivityIndicator,
   Modal,
   Alert,
+  Keyboard,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -295,9 +296,17 @@ const getResourceFeatureType = (feature: GeoJSON.Feature): ResourceType => {
   return 'hospital';
 };
 
+const isValidCoord = (lat: number, lng: number): boolean =>
+  typeof lat === 'number' &&
+  typeof lng === 'number' &&
+  isFinite(lat) && isFinite(lng) &&
+  lat >= -90 && lat <= 90 &&
+  lng >= -180 && lng <= 180;
+
 export default function MapLibre() {
   const cameraRef = useRef<CameraRef>(null);
   const hasCenteredOnUserRef = useRef(false);
+  const searchInputRef = useRef<TextInput>(null);
 
   const [activeFilter, setActiveFilter] = useState<FilterId>('all');
   const [isResourcesMode, setIsResourcesMode] = useState(false);
@@ -341,6 +350,8 @@ export default function MapLibre() {
   const [resourceType, setResourceType] = useState<ResourceFilterType>('all');
   const [sheetOpen, setSheetOpen] = useState(false);
   const [distanceRadius, setDistanceRadius] = useState(5 * 1609);
+  // Track if resource sheet was open before search opened, so we can restore it
+  const resourceSheetWasOpenRef = useRef(false);
 
   // Report fire modal state
   const [reportModalVisible, setReportModalVisible] = useState(false);
@@ -686,7 +697,9 @@ export default function MapLibre() {
           const wave1Places = mergePlaces([hospitalCollection, ...criticalResults]);
           setResourcesData({ type: 'FeatureCollection', features: toFeatures(wave1Places) });
           setNearbyPlaces(wave1Places);
-          if (isResourcesMode) setSheetOpen(true);
+          // Only open the sheet if the user explicitly activated Resources mode
+          // (not on background/initial load)
+          if (isResourcesMode && !searchSheetOpen) setSheetOpen(true);
 
           const secondaryResults = await Promise.all(secondaryPromises);
           const allPlaces = mergePlaces([wave1Places, ...secondaryResults]);
@@ -704,7 +717,7 @@ export default function MapLibre() {
           setNearbyPlaces(
             extractHospitalsFromGeoJSON(hospitalCollection, stableSearchCoords)
           );
-          if (isResourcesMode) setSheetOpen(true);
+          if (isResourcesMode && !searchSheetOpen) setSheetOpen(true);
           return;
         }
 
@@ -717,7 +730,7 @@ export default function MapLibre() {
 
         setResourcesData(data);
         setNearbyPlaces(extractGeoapifyPlacesFromGeoJSON(data, stableSearchCoords));
-        if (isResourcesMode) setSheetOpen(true);
+        if (isResourcesMode && !searchSheetOpen) setSheetOpen(true);
       } catch (err) {
         console.error('Failed to fetch nearby resources:', err);
         setResourcesError('Failed to load nearby resources');
@@ -959,9 +972,17 @@ export default function MapLibre() {
 
   // ── Search handlers ─────────────────────────────────────────────────────────
 
+  /** Opens the search sheet and collapses the resource sheet while searching */
+  const openSearchSheet = () => {
+    // Remember whether the resource sheet was open so we can restore it on close
+    resourceSheetWasOpenRef.current = sheetOpen;
+    // Collapse resource sheet so both sheets are never visible simultaneously
+    setSheetOpen(false);
+    setSearchSheetOpen(true);
+  };
+
   const handleSearchTextChange = (text: string) => {
     setSearch(text);
-    // Pass user's live coords for better proximity bias
     runSearch(text, userCoords);
   };
 
@@ -972,6 +993,8 @@ export default function MapLibre() {
     clearSearch();
     clearSelections();
     focusCameraOnCoordinate([lon, lat], 14);
+    // Don't restore resource sheet — user navigated to a new place
+    resourceSheetWasOpenRef.current = false;
   };
 
   const handleSelectSavedPlaceFromSearch = (location: {
@@ -987,12 +1010,21 @@ export default function MapLibre() {
     setSearch(location.label);
     setSearchSheetOpen(false);
     clearSearch();
+    resourceSheetWasOpenRef.current = false;
   };
 
   const handleSearchClose = () => {
+    searchInputRef.current?.blur();
+    Keyboard.dismiss();
+
     setSearchSheetOpen(false);
     clearSearch();
-    // Don't clear the search text — user may want to see what they searched
+
+    // Restore resource sheet if it was open before search was triggered
+    if (resourceSheetWasOpenRef.current) {
+      setSheetOpen(true);
+      resourceSheetWasOpenRef.current = false;
+    }
   };
 
   // ── Derived / memoized values ───────────────────────────────────────────────
@@ -1334,7 +1366,7 @@ export default function MapLibre() {
           })}
 
         {/* Home pin */}
-        {homeCoords && (
+        {homeCoords && isValidCoord(homeCoords.latitude, homeCoords.longitude) && (
           <PointAnnotation
             key={`home-${selectedSavedPlaceId === '__home__' ? 'sel' : 'def'}`}
             id="home-pin"
@@ -1354,7 +1386,9 @@ export default function MapLibre() {
         )}
 
         {/* Saved place pins */}
-        {savedPlaces.filter((p) => p.coords != null).map((place) => {
+        {savedPlaces
+          .filter((p) => p.coords != null && isValidCoord(p.coords.latitude, p.coords.longitude))
+          .map((place) => {
           const selected = selectedSavedPlaceId === place.id;
 
           return (
@@ -1379,7 +1413,11 @@ export default function MapLibre() {
 
         {selfReportsData &&
           (selfReportsData.features ?? [])
-            .filter((f): f is GeoJSON.Feature<GeoJSON.Point> => f.geometry?.type === 'Point')
+            .filter((f): f is GeoJSON.Feature<GeoJSON.Point> => {
+              if (f.geometry?.type !== 'Point') return false;
+              const [lng, lat] = f.geometry.coordinates as [number, number];
+              return isValidCoord(lat, lng);
+            })
             .map((feature, idx) => {
               const coords = feature.geometry.coordinates as [number, number];
               const id = getFeatureId(feature, String(idx));
@@ -1412,20 +1450,30 @@ export default function MapLibre() {
 
         {/* ── Search bar ────────────────────────────────────────────────────── */}
         <View style={styles.searchRow}>
+          {searchSheetOpen && (
+            <TouchableOpacity
+              style={styles.searchBackButton}
+              onPress={handleSearchClose}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              accessibilityLabel="Close search"
+            >
+              <Ionicons name="arrow-back" size={20} color="#374151" />
+            </TouchableOpacity>
+          )}
           <View style={[styles.searchBox, searchSheetOpen && styles.searchBoxFocused]}>
             <TextInput
+              ref={searchInputRef}
               style={styles.searchInput}
               placeholder="Search fires, places, or resources"
               placeholderTextColor="#9CA3AF"
               value={search}
               onChangeText={handleSearchTextChange}
-              onFocus={() => setSearchSheetOpen(true)}
+              onFocus={openSearchSheet}
               onBlur={() => {
                 // Don't close on blur so user can tap suggestions
               }}
               returnKeyType="search"
               onSubmitEditing={() => {
-                // Auto-select single result on keyboard submit
                 if (searchSuggestions.length === 1) {
                   handleSelectSuggestion(searchSuggestions[0]);
                 }
@@ -1437,6 +1485,11 @@ export default function MapLibre() {
                   setSearch('');
                   clearSearch();
                   setSearchSheetOpen(false);
+                  // Restore resource sheet if it was open
+                  if (resourceSheetWasOpenRef.current) {
+                    setSheetOpen(true);
+                    resourceSheetWasOpenRef.current = false;
+                  }
                 }}
                 hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
               >
@@ -1448,7 +1501,8 @@ export default function MapLibre() {
           </View>
         </View>
 
-        {/* ── Filter chips — always visible, always in the same position ─────── */}
+        {/* ── Filter chips — hidden while search sheet is open ──────────────── */}
+        {!searchSheetOpen && (
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
@@ -1499,7 +1553,12 @@ export default function MapLibre() {
                   }
                   setActiveFilter(f.id);
                   setIsResourcesMode(f.id === 'resources');
-                  if (f.id === 'resources') setSheetOpen(true);
+                  if (f.id === 'resources' || f.id === 'all') {
+                    setSheetOpen(true);
+                  } else {
+                    // Perimeters, hotspots, weather, prescribed — no resource sheet
+                    setSheetOpen(false);
+                  }
                 }}
                 activeOpacity={0.8}
               >
@@ -1552,6 +1611,7 @@ export default function MapLibre() {
             );
           })}
         </ScrollView>
+        )}
 
         {/* ── FAB buttons ───────────────────────────────────────────────────── */}
         <View style={styles.fab} pointerEvents="box-none">
@@ -1804,7 +1864,7 @@ export default function MapLibre() {
 
       {/* ── Resource bottom sheet ──────────────────────────────────────────── */}
       <ResourceBottomSheet
-        visible={sheetOpen}
+        visible={sheetOpen && !searchSheetOpen}
         peekOnly={!!(selectedData || selectedStation)}
         isResourcesFilterActive={activeFilter === 'resources'}
         places={visibleNearbyPlaces}
@@ -1816,6 +1876,7 @@ export default function MapLibre() {
         onChangeDistanceRadius={setDistanceRadius}
         onSelectPlace={handleSelectPlaceFromSheet}
         onClose={() => setSheetOpen(false)}
+        onOpen={() => setSheetOpen(true)}
       />
 
       {/* ── Search bottom sheet ────────────────────────────────────────────── */}
@@ -1849,16 +1910,36 @@ const styles = StyleSheet.create({
   },
 
   uiLayer: {
-    flex: 1,
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 10,
   },
 
   // ── Search bar ──────────────────────────────────────────────────────────────
   searchRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
     paddingHorizontal: 12,
     paddingTop: 8,
     paddingBottom: 6,
+    gap: 8,
+  },
+  searchBackButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOpacity: 0.08,
+    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 1 },
+    elevation: 3,
+    flexShrink: 0,
   },
   searchBox: {
+    flex: 1,
+    minWidth: 0,
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#FFFFFF',
