@@ -13,6 +13,7 @@ from routers.self_report import router as self_reports_router
 from routers.cache import router as cache_router
 from routers.messaging.messages import router as messages_router
 from routers.messaging.websocket import router as websocket_router
+from routers.messaging.users import router as user_router
 from services.redis import (
     connect as redis_connect,
     get_redis,
@@ -69,4 +70,5 @@ app.include_router(incidents_router)
 app.include_router(self_reports_router)
 app.include_router(cache_router)
 app.include_router(messages_router)
+app.include_router(user_router)
 app.include_router(websocket_router)

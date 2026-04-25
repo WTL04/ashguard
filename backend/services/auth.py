@@ -4,7 +4,7 @@ from fastapi import HTTPException, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 """
-Authenticating users using JWT tokens in HTTP Headers
+Authenticating Users using JSON Web Tokens in HTTP Headers
 """
 
 security = HTTPBearer()

@@ -3,7 +3,7 @@ import firebase_admin
 from firebase_admin import credentials
 
 """
-Authenticating Firebase Service Account
+Authenticating Server's Firebase Service Account
 """
 
 

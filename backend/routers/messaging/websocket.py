@@ -1,3 +1,4 @@
+import asyncio
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException
 from redis.asyncio import Redis
 from services.redis import get_pubsub
@@ -37,6 +38,8 @@ async def websocket_endpoint(websocket: WebSocket, chat_id: str):
             # fan out messages to subscribed clients
             if message and message["type"] == "message":
                 await websocket.send_text(message["data"])
+
+            await asyncio.sleep(0.01)  # yields control back to event loop
 
     except WebSocketDisconnect:
         await pubsub.unsubscribe(f"conversation:{chat_id}")
