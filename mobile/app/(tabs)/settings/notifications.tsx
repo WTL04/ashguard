@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   View,
   Text,
@@ -6,13 +6,34 @@ import {
   Pressable,
   Switch,
   Modal,
+  Alert,
+  Platform,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import Slider from "@react-native-community/slider";
 import { useRouter } from "expo-router";
+import { useAuthState } from "react-firebase-hooks/auth";
+import * as Notifications from "expo-notifications";
+import Constants from "expo-constants";
+import {
+  doc,
+  getDoc,
+  setDoc,
+  serverTimestamp,
+} from "firebase/firestore";
+import { auth, db } from "@/lib/firebaseConfig";
 
-const ORANGE = "#F59E0B"; 
+const ORANGE = "#F59E0B";
+
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowBanner: true,
+    shouldShowList: true,
+    shouldPlaySound: true,
+    shouldSetBadge: false,
+  }),
+});
 
 function Card({
   children,
@@ -43,14 +64,49 @@ function Row({
   if (!onPress) return content;
 
   return (
-    <Pressable onPress={onPress} style={({ pressed }) => pressed && { opacity: 0.6 }}>
+    <Pressable onPress={onPress} style={({ pressed }) => (pressed ? { opacity: 0.6 } : undefined)}>
       {content}
     </Pressable>
   );
 }
 
+async function registerForPushNotificationsAsync(): Promise<string | null> {
+  if (Platform.OS === "android") {
+    await Notifications.setNotificationChannelAsync("default", {
+      name: "default",
+      importance: Notifications.AndroidImportance.MAX,
+      vibrationPattern: [0, 250, 250, 250],
+      lightColor: "#F59E0B",
+    });
+  }
+
+  const { status: existingStatus } = await Notifications.getPermissionsAsync();
+  let finalStatus = existingStatus;
+
+  if (existingStatus !== "granted") {
+    const { status } = await Notifications.requestPermissionsAsync();
+    finalStatus = status;
+  }
+
+  if (finalStatus !== "granted") {
+    return null;
+  }
+
+  const projectId =
+    Constants.expoConfig?.extra?.eas?.projectId ??
+    Constants.easConfig?.projectId;
+
+  if (!projectId) {
+    throw new Error("Missing Expo projectId. Check app config / EAS project setup.");
+  }
+
+  const token = await Notifications.getExpoPushTokenAsync({ projectId });
+  return token.data;
+}
+
 export default function NotificationsScreen() {
   const router = useRouter();
+  const [user] = useAuthState(auth);
 
   const [distance, setDistance] = useState(50);
   const [editingDistance, setEditingDistance] = useState(false);
@@ -61,12 +117,94 @@ export default function NotificationsScreen() {
 
   const [communityOpen, setCommunityOpen] = useState(false);
   const [dm, setDm] = useState(true);
-  const [forum, setForum] = useState(true);
+  const [forum, setForum] = useState(false);
   const [comment, setComment] = useState(false);
+
+  const [loadingPrefs, setLoadingPrefs] = useState(true);
+  const [savingForum, setSavingForum] = useState(false);
+
+  useEffect(() => {
+    const loadPrefs = async () => {
+      if (!user?.uid) {
+        setLoadingPrefs(false);
+        return;
+      }
+
+      try {
+        const snap = await getDoc(doc(db, "users", user.uid));
+        if (snap.exists()) {
+          const data = snap.data();
+          setForum(!!data.officialNoticeNotificationsEnabled);
+        }
+      } catch (e) {
+        console.log("Failed to load notification prefs", e);
+      } finally {
+        setLoadingPrefs(false);
+      }
+    };
+
+    loadPrefs();
+  }, [user?.uid]);
+
+  const handleForumToggle = async (nextValue: boolean) => {
+    if (!user?.uid) {
+      Alert.alert("Not signed in", "You need to be signed in to change notification settings.");
+      return;
+    }
+
+    if (savingForum) return;
+
+    const previousValue = forum;
+    setForum(nextValue);
+    setSavingForum(true);
+
+    try {
+      const userRef = doc(db, "users", user.uid);
+
+      if (!nextValue) {
+        await setDoc(
+          userRef,
+          {
+            officialNoticeNotificationsEnabled: false,
+            notificationPreferencesUpdatedAt: serverTimestamp(),
+          },
+          { merge: true }
+        );
+        return;
+      }
+
+      const expoPushToken = await registerForPushNotificationsAsync();
+
+      if (!expoPushToken) {
+        setForum(previousValue);
+        Alert.alert("Permission required", "Push notification permission was not granted.");
+        return;
+      }
+
+      await setDoc(
+        userRef,
+        {
+          officialNoticeNotificationsEnabled: true,
+          expoPushToken,
+          pushPlatform: Platform.OS,
+          pushTokenUpdatedAt: serverTimestamp(),
+          notificationPreferencesUpdatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      );
+
+      console.log("Push token saved:", expoPushToken);
+    } catch (err) {
+      console.error("Error saving notification settings:", err);
+      setForum(previousValue);
+      Alert.alert("Error", "Could not update forum notification settings.");
+    } finally {
+      setSavingForum(false);
+    }
+  };
 
   return (
     <SafeAreaView style={styles.container} edges={["top"]}>
-      {/* Header */}
       <View style={styles.header}>
         <Pressable onPress={() => router.back()} hitSlop={10} style={styles.backBtn}>
           <Ionicons name="chevron-back" size={26} color="#111" />
@@ -76,7 +214,6 @@ export default function NotificationsScreen() {
       </View>
 
       <View style={styles.content}>
-        {/* Distance row */}
         <Card>
           <Row
             left={<Text style={styles.rowText}>Notification Distance - {distance} miles</Text>}
@@ -88,7 +225,6 @@ export default function NotificationsScreen() {
           />
         </Card>
 
-        {/* Toggles */}
         <Card>
           <Row
             left={<Text style={styles.rowText}>County Notifications</Text>}
@@ -116,7 +252,6 @@ export default function NotificationsScreen() {
           />
         </Card>
 
-        {/* Community notifications */}
         <Card style={{ paddingBottom: communityOpen ? 10 : 0 }}>
           <Row
             onPress={() => setCommunityOpen((v) => !v)}
@@ -136,12 +271,24 @@ export default function NotificationsScreen() {
                 left={<Text style={styles.subRowText}>Direct Messages Notifications</Text>}
                 right={<Switch value={dm} onValueChange={setDm} trackColor={{ true: ORANGE }} />}
               />
+
               <Row
-                left={<Text style={styles.subRowText}>Forum Notifications</Text>}
+                left={
+                  <View>
+                    <Text style={styles.subRowText}>Forum Notifications</Text>
+                    <Text style={styles.helperText}>Official notice alerts</Text>
+                  </View>
+                }
                 right={
-                  <Switch value={forum} onValueChange={setForum} trackColor={{ true: ORANGE }} />
+                  <Switch
+                    value={forum}
+                    onValueChange={handleForumToggle}
+                    trackColor={{ true: ORANGE }}
+                    disabled={loadingPrefs || savingForum}
+                  />
                 }
               />
+
               <Row
                 left={<Text style={styles.subRowText}>Comment Notifications</Text>}
                 right={
@@ -157,7 +304,6 @@ export default function NotificationsScreen() {
         </Card>
       </View>
 
-      {/* Distance modal */}
       <Modal
         visible={editingDistance}
         transparent
@@ -240,6 +386,7 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
   },
   subRowText: { fontSize: 13, fontWeight: "500", color: "#111" },
+  helperText: { fontSize: 11, color: "#6B7280", marginTop: 2 },
 
   modalBackdrop: {
     flex: 1,

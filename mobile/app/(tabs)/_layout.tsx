@@ -1,8 +1,12 @@
-import React from 'react';
+import React, { useEffect, useRef } from 'react';
 import { Tabs } from 'expo-router';
 import { View, StyleSheet, Platform } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '@/constants/colors';
+import * as Location from 'expo-location';
+import { doc, updateDoc, serverTimestamp } from 'firebase/firestore';
+import { getAuth, onAuthStateChanged } from 'firebase/auth';
+import { db } from '@/lib/firebaseConfig';
 
 type IoniconName = React.ComponentProps<typeof Ionicons>['name'];
 
@@ -27,6 +31,86 @@ function TabIcon({ icon, focused }: TabIconProps) {
 }
 
 export default function TabsLayout() {
+  const locationSubscription = useRef<Location.LocationSubscription | null>(null);
+
+  useEffect(() => {
+    const auth = getAuth();
+
+    // Wait for Firebase Auth to restore the session before doing anything
+    const unsubscribeAuth = onAuthStateChanged(auth, (user) => {
+      if (user) {
+        startLocationTracking(user.uid);
+      }
+    });
+
+    return () => {
+      unsubscribeAuth();
+      locationSubscription.current?.remove();
+    };
+  }, []);
+
+  const startLocationTracking = async (uid: string) => {
+    try {
+      console.log('[Location] Starting tracking for uid:', uid);
+
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      console.log('[Location] Permission status:', status);
+      if (status !== 'granted') return;
+
+      const userRef = doc(db, 'users', uid);
+      console.log('[Location] User ref path:', userRef.path);
+
+      // Try last known position first (instant, no GPS needed)
+      // Fall back to getCurrentPositionAsync if nothing cached yet
+      let initial = await Location.getLastKnownPositionAsync({
+        maxAge: 5 * 60 * 1000, // accept if less than 5 minutes old
+      });
+
+      if (!initial) {
+        console.log('[Location] No cached position, requesting current...');
+        initial = await Location.getCurrentPositionAsync({
+          accuracy: Location.Accuracy.Balanced,
+        });
+      }
+
+      console.log('[Location] Got coords:', initial.coords.latitude, initial.coords.longitude);
+
+      await updateDoc(userRef, {
+        location: {
+          latitude: initial.coords.latitude,
+          longitude: initial.coords.longitude,
+        },
+        locationUpdatedAt: serverTimestamp(),
+        locationSharingEnabled: true,
+      });
+      console.log('[Location] ✅ Firestore updated successfully');
+
+      locationSubscription.current = await Location.watchPositionAsync(
+        {
+          accuracy: Location.Accuracy.Balanced,
+          distanceInterval: 50,
+          timeInterval: 30_000,
+        },
+        async (loc) => {
+          try {
+            await updateDoc(userRef, {
+              location: {
+                latitude: loc.coords.latitude,
+                longitude: loc.coords.longitude,
+              },
+              locationUpdatedAt: serverTimestamp(),
+            });
+            console.log('[Location] 🔄 Watch update written to Firestore');
+          } catch (e) {
+            console.log('[Location] ❌ Watch update error:', e);
+          }
+        }
+      );
+    } catch (e) {
+      console.log('[Location] ❌ Tracking error:', e);
+    }
+  };
+
   return (
     <Tabs
       screenOptions={{
