@@ -1,14 +1,19 @@
 import logging
 from datetime import datetime, timezone, timedelta
 from uuid import uuid4
-from fastapi import APIRouter, Query
+from fastapi import APIRouter
 from fastapi.responses import JSONResponse
-from services.firebase import get_db
-
+from pydantic import BaseModel
+from services.firestore import get_db
 
 logger = logging.getLogger(__name__)
-
 router = APIRouter(prefix="/api/v1", tags=["self-reports"])
+
+
+class SelfReportCreate(BaseModel):
+    latitude: float
+    longitude: float
+    description: str | None = None
 
 
 def self_report_doc_to_feature(doc_id: str, data: dict) -> dict:
@@ -34,24 +39,19 @@ def self_report_doc_to_feature(doc_id: str, data: dict) -> dict:
 
 
 @router.post("/self-reports")
-async def create_self_report(
-    latitude: float = Query(...),
-    longitude: float = Query(...),
-    description: str | None = Query(None),
-):
+async def create_self_report(payload: SelfReportCreate):
     try:
         db = get_db()
         report_id = f"self_report_{uuid4().hex}"
-
         now = datetime.now(timezone.utc)
         expires_at = now + timedelta(hours=6)
 
         report_data = {
             "type": "fire",
             "status": "pending",
-            "latitude": latitude,
-            "longitude": longitude,
-            "description": description or "",
+            "latitude": payload.latitude,
+            "longitude": payload.longitude,
+            "description": payload.description or "",
             "source": "user",
             "confirmedCount": 0,
             "isActive": True,
@@ -86,10 +86,8 @@ async def get_self_reports():
             .where("expiresAt", ">", now_iso)
         )
 
-        docs = query.stream()
-
         features = []
-        async for doc in docs:
+        async for doc in query.stream():
             data = doc.to_dict()
             features.append(self_report_doc_to_feature(doc.id, data))
 
@@ -103,4 +101,3 @@ async def get_self_reports():
             status_code=500,
             content={"detail": f"Failed to fetch self reports: {str(e)}"},
         )
-
