@@ -10,6 +10,7 @@ import {
   Keyboard,
   TouchableWithoutFeedback,
   ActivityIndicator,
+  ScrollView,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -21,7 +22,6 @@ import {
   geocodeAddressWithMapbox,
 } from "@/lib/useMapboxSearch";
 
-// ─── Types ────────────────────────────────────────────────────────────────────
 type LatLng = {
   latitude: number;
   longitude: number;
@@ -34,31 +34,31 @@ type SavedPlace = {
   coords: LatLng | null;
 };
 
-// ─── Constants ────────────────────────────────────────────────────────────────
-const TAN = "#FDEFE7";
-const TAN_BORDER = "#F2D8C8";
-const BORDER = "#F0EBE3";
 const BG = "#FAF8F5";
+const CARD = "#FFFFFF";
+const BORDER = "#F0EBE3";
 const TEXT = "#1A1614";
 const MUTED = "#9B9189";
 const ORANGE = "#F58500";
 const ORANGE_LIGHT = "#FFF4E6";
 const ORANGE_MID = "#FFE0B2";
+const RED = "#EF4444";
+const RED_LIGHT = "#FFF1F2";
+const RED_MID = "#FECDD3";
 
-// ─── Screen ───────────────────────────────────────────────────────────────────
 export default function PlacesScreen() {
   const router = useRouter();
 
-  const [savedOpen, setSavedOpen] = useState(false);
+  const [savedOpen, setSavedOpen] = useState(true);
 
   const [countyModalOpen, setCountyModalOpen] = useState(false);
   const [county, setCounty] = useState("LA County");
   const [countyDraft, setCountyDraft] = useState("LA County");
 
   const [homeModalOpen, setHomeModalOpen] = useState(false);
-  const [home, setHome] = useState("set address");
+  const [home, setHome] = useState("");
   const [homeCoords, setHomeCoords] = useState<LatLng | null>(null);
-  const [homeDraft, setHomeDraft] = useState("set address");
+  const [homeDraft, setHomeDraft] = useState("");
   const [homeCoordsFromSuggestion, setHomeCoordsFromSuggestion] =
     useState<LatLng | null>(null);
   const homeMapbox = useMapboxSearch();
@@ -70,9 +70,7 @@ export default function PlacesScreen() {
   const [addressCoords, setAddressCoords] = useState<LatLng | null>(null);
   const savedMapbox = useMapboxSearch();
 
-  const [savedPlaces, setSavedPlaces] = useState<SavedPlace[]>([
-    { id: "1", nickname: "set nickname", address: "set address", coords: null },
-  ]);
+  const [savedPlaces, setSavedPlaces] = useState<SavedPlace[]>([]);
 
   useEffect(() => {
     const loadUserPlaces = async () => {
@@ -96,10 +94,10 @@ export default function PlacesScreen() {
         }
 
         const data = snapshot.data();
-
         setHome(data.homeAddress || "");
         setHomeCoords(data.homeCoords || null);
         setSavedPlaces(Array.isArray(data.savedPlaces) ? data.savedPlaces : []);
+
         if (data.county) {
           setCounty(data.county);
           setCountyDraft(data.county);
@@ -170,7 +168,6 @@ export default function PlacesScreen() {
     }
   }
 
-  // ─── Home modal ───────────────────────────────────────────────────────────
   function openHomeModal() {
     setHomeDraft(home);
     setHomeCoordsFromSuggestion(homeCoords);
@@ -206,10 +203,12 @@ export default function PlacesScreen() {
     closeHomeModal();
   }
 
-  // ─── Saved Places modal ───────────────────────────────────────────────────
   function closeSavedModal() {
     setSavedModalOpen(false);
     setEditingId(null);
+    setNicknameDraft("");
+    setAddressQuery("");
+    setAddressCoords(null);
     savedMapbox.clear();
     Keyboard.dismiss();
   }
@@ -263,6 +262,12 @@ export default function PlacesScreen() {
     closeSavedModal();
   }
 
+  async function deleteSavedPlace(id: string) {
+    const next = savedPlaces.filter((place) => place.id !== id);
+    setSavedPlaces(next);
+    await persistSavedPlaces(next);
+  }
+
   async function saveCountyValue() {
     const value = countyDraft.trim();
     if (!value) return;
@@ -271,105 +276,157 @@ export default function PlacesScreen() {
     setCountyModalOpen(false);
   }
 
-  // ─── Render ───────────────────────────────────────────────────────────────
+  const renderInfoRow = ({
+    icon,
+    label,
+    value,
+    onEdit,
+    iconColor = ORANGE,
+    iconActive = true,
+  }: {
+    icon: keyof typeof Ionicons.glyphMap;
+    label: string;
+    value: string;
+    onEdit: () => void;
+    iconColor?: string;
+    iconActive?: boolean;
+  }) => (
+    <View style={styles.row}>
+      <View style={[styles.iconWrap, iconActive && styles.iconWrapActive]}>
+        <Ionicons name={icon} size={16} color={iconColor} />
+      </View>
+      <View style={styles.rowText}>
+        <Text style={styles.rowOverline}>{label}</Text>
+        <Text style={styles.rowValue} numberOfLines={1}>
+          {value}
+        </Text>
+      </View>
+      <Pressable style={styles.editButton} onPress={onEdit}>
+        <Text style={styles.editButtonText}>Edit</Text>
+      </Pressable>
+    </View>
+  );
+
   return (
     <SafeAreaView style={styles.container} edges={["top"]}>
       <View style={styles.header}>
-        <Pressable onPress={() => router.back()} style={styles.backBtn}>
-          <Ionicons name="chevron-back" size={24} color="#111" />
+        <Pressable onPress={() => router.back()} style={styles.backBtn} hitSlop={10}>
+          <Ionicons name="chevron-back" size={22} color={TEXT} />
         </Pressable>
         <Text style={styles.headerTitle}>Places</Text>
-        <View style={{ width: 40 }} />
+        <View style={{ width: 38 }} />
       </View>
 
-      <View style={styles.content}>
-        <View style={styles.cardRow}>
-          <Text style={styles.cardRowTitle}>County — {county}</Text>
-          <Pressable
-            onPress={() => {
+      <ScrollView
+        style={styles.scroll}
+        contentContainerStyle={styles.content}
+        showsVerticalScrollIndicator={false}
+      >
+        <Text style={styles.sectionHeader}>LOCATION</Text>
+        <View style={styles.card}>
+          {renderInfoRow({
+            icon: "map-outline",
+            label: "County",
+            value: county || "Set county",
+            onEdit: () => {
               setCountyDraft(county);
               setCountyModalOpen(true);
-            }}
-          >
-            <Text style={styles.editText}>Edit</Text>
-          </Pressable>
+            },
+          })}
+
+          <View style={styles.divider} />
+
+          {renderInfoRow({
+            icon: "home-outline",
+            label: "Home Address",
+            value: home || "Set address",
+            onEdit: openHomeModal,
+          })}
         </View>
 
-        <View style={styles.cardRow}>
-          <View style={{ flex: 1, marginRight: 8 }}>
-            <Text style={styles.cardRowTitle}>Home</Text>
-            <Text style={styles.cardRowSub} numberOfLines={1}>
-              {home || "No home address set"}
-            </Text>
-          </View>
-          <Pressable onPress={openHomeModal}>
-            <Text style={styles.editText}>Edit</Text>
+        <View style={styles.savedHeaderRow}>
+          <Text style={styles.sectionHeader}>SAVED PLACES</Text>
+          <Pressable onPress={() => setSavedOpen((prev) => !prev)} hitSlop={10}>
+            <Ionicons
+              name={savedOpen ? "chevron-up" : "chevron-down"}
+              size={16}
+              color={MUTED}
+            />
           </Pressable>
         </View>
-
-        <Pressable style={styles.cardRow} onPress={() => setSavedOpen((v) => !v)}>
-          <Text style={styles.cardRowTitle}>Saved Places</Text>
-          <Ionicons
-            name={savedOpen ? "chevron-up" : "chevron-down"}
-            size={18}
-            color="#111"
-          />
-        </Pressable>
 
         {savedOpen && (
-          <View style={styles.savedPanel}>
-            <Pressable style={styles.addBtn} onPress={openAddSavedPlace}>
-              <Text style={styles.addBtnText}>+ Add Saved Place</Text>
-            </Pressable>
-
-            {savedPlaces.length === 0 ? (
-              <Text style={styles.savedAddr}>No saved places yet</Text>
-            ) : (
-              savedPlaces.map((p) => (
-                <View key={p.id} style={styles.savedRow}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.savedNick}>{p.nickname}</Text>
-                    <Text style={styles.savedAddr}>{p.address}</Text>
+          <View style={styles.card}>
+            {savedPlaces.length > 0 &&
+              savedPlaces.map((place, index) => (
+                <View key={place.id}>
+                  {index > 0 && <View style={styles.divider} />}
+                  <View style={styles.row}>
+                    <View style={[styles.iconWrap, styles.iconWrapActive]}>
+                      <Ionicons name="bookmark-outline" size={16} color={ORANGE} />
+                    </View>
+                    <View style={styles.rowText}>
+                      <Text style={styles.rowOverline}>{place.nickname}</Text>
+                      <Text style={styles.rowValue} numberOfLines={1}>
+                        {place.address}
+                      </Text>
+                    </View>
+                    <Pressable
+                      style={styles.editButton}
+                      onPress={() => openEditSavedPlace(place)}
+                    >
+                      <Text style={styles.editButtonText}>Edit</Text>
+                    </Pressable>
+                    <Pressable
+                      style={styles.deleteButton}
+                      onPress={() => deleteSavedPlace(place.id)}
+                    >
+                      <Ionicons name="trash-outline" size={15} color={RED} />
+                    </Pressable>
                   </View>
-                  <Pressable onPress={() => openEditSavedPlace(p)}>
-                    <Text style={styles.editText}>Edit</Text>
-                  </Pressable>
                 </View>
-              ))
-            )}
+              ))}
+
+            {savedPlaces.length > 0 && <View style={styles.divider} />}
+
+            <Pressable style={styles.addRow} onPress={openAddSavedPlace}>
+              <View style={styles.addIconWrap}>
+                <Ionicons name="add" size={18} color={ORANGE} />
+              </View>
+              <Text style={styles.addRowText}>Add a place</Text>
+            </Pressable>
           </View>
         )}
-      </View>
+      </ScrollView>
 
-      {/* ── County Modal ──────────────────────────────────────────────────── */}
       <Modal visible={countyModalOpen} transparent animationType="fade">
         <TouchableWithoutFeedback onPress={() => Keyboard.dismiss()}>
           <View style={styles.modalOverlay}>
             <TouchableWithoutFeedback>
               <View style={styles.modalCard}>
                 <View style={styles.modalIconWrap}>
-                  <Ionicons name="map-outline" size={20} color={ORANGE} />
+                  <Ionicons name="map-outline" size={18} color={ORANGE} />
                 </View>
-                <Text style={styles.modalTitle}>County</Text>
+                <Text style={styles.modalTitle}>Edit County</Text>
                 <Text style={styles.modalSub}>
-                  Update the county for your location preferences.
+                  Update the county used for your location settings.
                 </Text>
                 <TextInput
                   value={countyDraft}
                   onChangeText={setCountyDraft}
-                  style={styles.modalInput}
+                  style={styles.input}
                   placeholder="e.g. LA County"
                   placeholderTextColor={MUTED}
                 />
                 <View style={styles.modalBtnRow}>
-                  <Pressable style={styles.modalSaveBtn} onPress={saveCountyValue}>
-                    <Text style={styles.modalSaveBtnText}>Save</Text>
+                  <Pressable style={styles.primaryBtn} onPress={saveCountyValue}>
+                    <Text style={styles.primaryBtnText}>Save</Text>
                   </Pressable>
                   <Pressable
-                    style={styles.modalCancelBtn}
+                    style={styles.secondaryBtn}
                     onPress={() => setCountyModalOpen(false)}
                   >
-                    <Text style={styles.modalCancelBtnText}>Cancel</Text>
+                    <Text style={styles.secondaryBtnText}>Cancel</Text>
                   </Pressable>
                 </View>
               </View>
@@ -378,7 +435,6 @@ export default function PlacesScreen() {
         </TouchableWithoutFeedback>
       </Modal>
 
-      {/* ── Home Modal ────────────────────────────────────────────────────── */}
       <Modal visible={homeModalOpen} transparent animationType="fade">
         <TouchableWithoutFeedback
           onPress={() => {
@@ -389,36 +445,29 @@ export default function PlacesScreen() {
           <View style={styles.modalOverlay}>
             <TouchableWithoutFeedback>
               <View style={styles.modalCardWide}>
-                <View style={styles.modalHeader}>
-                  <Ionicons
-                    name="home-outline"
-                    size={18}
-                    color="#F58500"
-                    style={{ marginRight: 6 }}
-                  />
-                  <Text style={styles.modalTitleLarge}>Home Address</Text>
+                <View style={styles.modalHeaderRow}>
+                  <View style={styles.modalIconWrapSmall}>
+                    <Ionicons name="home-outline" size={16} color={ORANGE} />
+                  </View>
+                  <Text style={styles.modalTitleWide}>Home Address</Text>
                 </View>
 
                 <View style={styles.searchFieldWrap}>
-                  <Ionicons name="search" size={16} color="#999" style={styles.searchIcon} />
+                  <Ionicons name="search" size={16} color={MUTED} style={styles.searchIcon} />
                   <TextInput
                     value={homeDraft}
-                    onChangeText={(t) => {
-                      setHomeDraft(t);
+                    onChangeText={(text) => {
+                      setHomeDraft(text);
                       setHomeCoordsFromSuggestion(null);
-                      homeMapbox.search(t);
+                      homeMapbox.search(text);
                     }}
                     style={styles.searchInput}
                     placeholder="Search address..."
-                    placeholderTextColor="#BBAA99"
+                    placeholderTextColor="#B8AEA6"
                     autoCorrect={false}
                   />
                   {homeMapbox.loading && (
-                    <ActivityIndicator
-                      size="small"
-                      color="#F58500"
-                      style={{ marginRight: 10 }}
-                    />
+                    <ActivityIndicator size="small" color={ORANGE} style={styles.loader} />
                   )}
                 </View>
 
@@ -443,7 +492,7 @@ export default function PlacesScreen() {
                           <Ionicons
                             name="location-outline"
                             size={15}
-                            color="#F58500"
+                            color={ORANGE}
                             style={{ marginRight: 8 }}
                           />
                           <Text style={styles.suggestionText}>{item.label}</Text>
@@ -456,25 +505,25 @@ export default function PlacesScreen() {
                 {!homeMapbox.loading &&
                   homeDraft.trim().length > 1 &&
                   homeMapbox.suggestions.length === 0 && (
-                    <Text style={styles.noResultsText}>No results — keep typing</Text>
+                    <Text style={styles.helperText}>No results yet. Keep typing.</Text>
                   )}
 
                 {homeCoordsFromSuggestion && (
                   <View style={styles.coordsBadge}>
                     <Ionicons name="checkmark-circle" size={13} color="#16A34A" />
                     <Text style={styles.coordsBadgeText}>
-                      {homeCoordsFromSuggestion.latitude.toFixed(4)},{" "}
+                      {homeCoordsFromSuggestion.latitude.toFixed(4)}, {" "}
                       {homeCoordsFromSuggestion.longitude.toFixed(4)}
                     </Text>
                   </View>
                 )}
 
                 <View style={styles.modalBtnRow}>
-                  <Pressable style={styles.modalSaveBtn} onPress={saveHome}>
-                    <Text style={styles.modalSaveBtnText}>Save</Text>
+                  <Pressable style={styles.primaryBtn} onPress={saveHome}>
+                    <Text style={styles.primaryBtnText}>Save</Text>
                   </Pressable>
-                  <Pressable style={styles.modalCancelBtn} onPress={closeHomeModal}>
-                    <Text style={styles.modalCancelBtnText}>Cancel</Text>
+                  <Pressable style={styles.secondaryBtn} onPress={closeHomeModal}>
+                    <Text style={styles.secondaryBtnText}>Cancel</Text>
                   </Pressable>
                 </View>
               </View>
@@ -483,7 +532,6 @@ export default function PlacesScreen() {
         </TouchableWithoutFeedback>
       </Modal>
 
-      {/* ── Add / Edit Saved Place Modal ──────────────────────────────────── */}
       <Modal visible={savedModalOpen} transparent animationType="fade">
         <TouchableWithoutFeedback
           onPress={() => {
@@ -494,39 +542,32 @@ export default function PlacesScreen() {
           <View style={styles.modalOverlay}>
             <TouchableWithoutFeedback>
               <View style={styles.modalCardWide}>
-                <View style={styles.modalHeader}>
-                  <Ionicons
-                    name="bookmark-outline"
-                    size={18}
-                    color="#F58500"
-                    style={{ marginRight: 6 }}
-                  />
-                  <Text style={styles.modalTitleLarge}>
+                <View style={styles.modalHeaderRow}>
+                  <View style={styles.modalIconWrapSmall}>
+                    <Ionicons name="bookmark-outline" size={16} color={ORANGE} />
+                  </View>
+                  <Text style={styles.modalTitleWide}>
                     {editingId ? "Edit Saved Place" : "Add Saved Place"}
                   </Text>
                 </View>
 
-                <Text style={styles.modalLabel}>Address</Text>
+                <Text style={styles.inputLabel}>Address</Text>
                 <View style={styles.searchFieldWrap}>
-                  <Ionicons name="search" size={16} color="#999" style={styles.searchIcon} />
+                  <Ionicons name="search" size={16} color={MUTED} style={styles.searchIcon} />
                   <TextInput
                     value={addressQuery}
-                    onChangeText={(t) => {
-                      setAddressQuery(t);
+                    onChangeText={(text) => {
+                      setAddressQuery(text);
                       setAddressCoords(null);
-                      savedMapbox.search(t);
+                      savedMapbox.search(text);
                     }}
                     style={styles.searchInput}
                     placeholder="Search address..."
-                    placeholderTextColor="#BBAA99"
+                    placeholderTextColor="#B8AEA6"
                     autoCorrect={false}
                   />
                   {savedMapbox.loading && (
-                    <ActivityIndicator
-                      size="small"
-                      color="#F58500"
-                      style={{ marginRight: 10 }}
-                    />
+                    <ActivityIndicator size="small" color={ORANGE} style={styles.loader} />
                   )}
                 </View>
 
@@ -551,7 +592,7 @@ export default function PlacesScreen() {
                           <Ionicons
                             name="location-outline"
                             size={15}
-                            color="#F58500"
+                            color={ORANGE}
                             style={{ marginRight: 8 }}
                           />
                           <Text style={styles.suggestionText}>{item.label}</Text>
@@ -564,25 +605,25 @@ export default function PlacesScreen() {
                 {!savedMapbox.loading &&
                   addressQuery.trim().length > 1 &&
                   savedMapbox.suggestions.length === 0 && (
-                    <Text style={styles.noResultsText}>No results — keep typing</Text>
+                    <Text style={styles.helperText}>No results yet. Keep typing.</Text>
                   )}
 
                 {addressCoords && (
                   <View style={styles.coordsBadge}>
                     <Ionicons name="checkmark-circle" size={13} color="#16A34A" />
                     <Text style={styles.coordsBadgeText}>
-                      {addressCoords.latitude.toFixed(4)},{" "}
+                      {addressCoords.latitude.toFixed(4)}, {" "}
                       {addressCoords.longitude.toFixed(4)}
                     </Text>
                   </View>
                 )}
 
-                <Text style={[styles.modalLabel, { marginTop: 14 }]}>Nickname</Text>
+                <Text style={[styles.inputLabel, { marginTop: 14 }]}>Nickname</Text>
                 <View style={styles.searchFieldWrap}>
                   <Ionicons
                     name="pricetag-outline"
                     size={16}
-                    color="#999"
+                    color={MUTED}
                     style={styles.searchIcon}
                   />
                   <TextInput
@@ -590,16 +631,16 @@ export default function PlacesScreen() {
                     onChangeText={setNicknameDraft}
                     style={styles.searchInput}
                     placeholder="e.g. Insurance Hospital"
-                    placeholderTextColor="#BBAA99"
+                    placeholderTextColor="#B8AEA6"
                   />
                 </View>
 
                 <View style={styles.modalBtnRow}>
-                  <Pressable style={styles.modalSaveBtn} onPress={saveSavedPlace}>
-                    <Text style={styles.modalSaveBtnText}>Save</Text>
+                  <Pressable style={styles.primaryBtn} onPress={saveSavedPlace}>
+                    <Text style={styles.primaryBtnText}>Save</Text>
                   </Pressable>
-                  <Pressable style={styles.modalCancelBtn} onPress={closeSavedModal}>
-                    <Text style={styles.modalCancelBtnText}>Cancel</Text>
+                  <Pressable style={styles.secondaryBtn} onPress={closeSavedModal}>
+                    <Text style={styles.secondaryBtnText}>Cancel</Text>
                   </Pressable>
                 </View>
               </View>
@@ -611,11 +652,10 @@ export default function PlacesScreen() {
   );
 }
 
-// ─── Styles ───────────────────────────────────────────────────────────────────
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#F3F4F6",
+    backgroundColor: BG,
   },
 
   header: {
@@ -629,111 +669,195 @@ const styles = StyleSheet.create({
     backgroundColor: BG,
   },
   backBtn: {
-    width: 40,
+    width: 38,
+    height: 38,
+    borderRadius: 12,
+    backgroundColor: CARD,
+    borderWidth: 1,
+    borderColor: BORDER,
+    alignItems: "center",
     justifyContent: "center",
   },
   headerTitle: {
-    fontSize: 20,
+    fontSize: 17,
     fontWeight: "700",
-    color: "#111",
+    color: TEXT,
+    letterSpacing: -0.3,
   },
 
+  scroll: {
+    flex: 1,
+  },
   content: {
-    paddingHorizontal: 14,
-    paddingTop: 10,
+    paddingHorizontal: 16,
+    paddingTop: 20,
+    paddingBottom: 28,
+  },
+
+  sectionHeader: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: MUTED,
+    letterSpacing: 1.2,
+    marginBottom: 10,
+    marginLeft: 4,
+  },
+  savedHeaderRow: {
+    marginTop: 18,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+
+  card: {
+    backgroundColor: CARD,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: BORDER,
+    overflow: "hidden",
+    shadowColor: "#000",
+    shadowOpacity: 0.04,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 1,
+  },
+
+  row: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 16,
+    paddingVertical: 16,
     gap: 12,
   },
+  divider: {
+    height: 1,
+    backgroundColor: BORDER,
+    marginHorizontal: 16,
+  },
 
-  cardRow: {
-    backgroundColor: "#F7F7F7",
+  iconWrap: {
+    width: 36,
+    height: 36,
     borderRadius: 10,
+    backgroundColor: "#F3F4F6",
     borderWidth: 1,
-    borderColor: "#E5E7EB",
-    paddingHorizontal: 12,
-    paddingVertical: 14,
-    flexDirection: "row",
-    justifyContent: "space-between",
+    borderColor: BORDER,
     alignItems: "center",
+    justifyContent: "center",
   },
-  cardRowTitle: {
-    fontSize: 14,
-    fontWeight: "600",
+  iconWrapActive: {
+    backgroundColor: ORANGE_LIGHT,
+    borderColor: ORANGE_MID,
   },
-  cardRowSub: {
+  rowText: {
+    flex: 1,
+    minWidth: 0,
+  },
+  rowOverline: {
     fontSize: 12,
-    color: "#6B7280",
-    marginTop: 2,
-  },
-  editText: {
-    fontSize: 13,
     fontWeight: "600",
-    color: "#F58500",
+    color: MUTED,
+    marginBottom: 3,
+  },
+  rowValue: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: TEXT,
   },
 
-  savedPanel: {
-    backgroundColor: TAN,
-    borderRadius: 10,
-    padding: 10,
+  editButton: {
+    minWidth: 68,
+    height: 36,
+    paddingHorizontal: 14,
+    borderRadius: 999,
+    backgroundColor: ORANGE_LIGHT,
     borderWidth: 1,
-    borderColor: TAN_BORDER,
-    gap: 10,
+    borderColor: ORANGE_MID,
+    alignItems: "center",
+    justifyContent: "center",
   },
-
-  addBtn: {
-    backgroundColor: "#E7DAD2",
-    borderRadius: 8,
-    paddingVertical: 12,
-    paddingHorizontal: 12,
-  },
-  addBtnText: {
+  editButtonText: {
     fontSize: 14,
     fontWeight: "700",
+    color: ORANGE,
+  },
+  deleteButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    backgroundColor: RED_LIGHT,
+    borderWidth: 1,
+    borderColor: RED_MID,
+    alignItems: "center",
+    justifyContent: "center",
   },
 
-  savedRow: {
-    backgroundColor: "#FFFFFF",
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: "#E5E7EB",
-    padding: 10,
+  addRow: {
     flexDirection: "row",
-    justifyContent: "space-between",
     alignItems: "center",
+    paddingHorizontal: 16,
+    paddingVertical: 16,
+    gap: 12,
   },
-  savedNick: {
+  addIconWrap: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    backgroundColor: "#FFF8F0",
+    borderWidth: 1,
+    borderColor: ORANGE_MID,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  addRowText: {
+    fontSize: 15,
     fontWeight: "700",
-  },
-  savedAddr: {
-    fontSize: 12,
-    color: "#6B7280",
+    color: ORANGE,
   },
 
   modalOverlay: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.35)",
+    backgroundColor: "rgba(26, 22, 20, 0.35)",
     justifyContent: "center",
     paddingHorizontal: 20,
   },
   modalCard: {
-    backgroundColor: "#FFFFFF",
+    backgroundColor: CARD,
     borderRadius: 24,
     padding: 24,
   },
   modalCardWide: {
-    backgroundColor: "#FFFFFF",
-    borderRadius: 14,
-    padding: 16,
+    backgroundColor: CARD,
+    borderRadius: 20,
+    padding: 18,
   },
-
-  modalHeader: {
+  modalIconWrap: {
+    width: 50,
+    height: 50,
+    borderRadius: 25,
+    backgroundColor: ORANGE_LIGHT,
+    borderWidth: 1,
+    borderColor: ORANGE_MID,
+    alignItems: "center",
+    justifyContent: "center",
+    alignSelf: "center",
+    marginBottom: 14,
+  },
+  modalIconWrapSmall: {
+    width: 34,
+    height: 34,
+    borderRadius: 10,
+    backgroundColor: ORANGE_LIGHT,
+    borderWidth: 1,
+    borderColor: ORANGE_MID,
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 10,
+  },
+  modalHeaderRow: {
     flexDirection: "row",
     alignItems: "center",
     marginBottom: 14,
-  },
-  modalTitleLarge: {
-    fontSize: 16,
-    fontWeight: "800",
-    color: "#111",
   },
   modalTitle: {
     fontSize: 18,
@@ -743,6 +867,11 @@ const styles = StyleSheet.create({
     letterSpacing: -0.3,
     marginBottom: 6,
   },
+  modalTitleWide: {
+    fontSize: 16,
+    fontWeight: "800",
+    color: TEXT,
+  },
   modalSub: {
     fontSize: 13,
     color: MUTED,
@@ -750,87 +879,77 @@ const styles = StyleSheet.create({
     lineHeight: 18,
     marginBottom: 18,
   },
-  modalLabel: {
+
+  inputLabel: {
     fontSize: 12,
     fontWeight: "700",
-    color: "#6B7280",
+    color: MUTED,
     marginBottom: 6,
   },
-  modalIconWrap: {
-    width: 50,
-    height: 50,
-    borderRadius: 25,
+  input: {
     backgroundColor: ORANGE_LIGHT,
-    alignItems: "center",
-    justifyContent: "center",
-    alignSelf: "center",
-    marginBottom: 14,
+    borderRadius: 12,
     borderWidth: 1,
-    borderColor: ORANGE_MID,
+    borderColor: BORDER,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    fontSize: 14,
+    color: TEXT,
   },
-
   searchFieldWrap: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: TAN,
-    borderRadius: 10,
+    backgroundColor: ORANGE_LIGHT,
+    borderRadius: 12,
     borderWidth: 1,
-    borderColor: "#E5E7EB",
-    marginBottom: 4,
+    borderColor: BORDER,
   },
   searchIcon: {
     marginLeft: 10,
   },
   searchInput: {
     flex: 1,
-    paddingVertical: 10,
+    paddingVertical: 12,
     paddingHorizontal: 8,
     fontSize: 14,
-    color: "#111",
+    color: TEXT,
   },
-
-  modalInput: {
-    backgroundColor: TAN,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: "#E5E7EB",
-    padding: 10,
+  loader: {
+    marginRight: 10,
   },
 
   suggestionBox: {
     borderWidth: 1,
-    borderColor: "#FFD0A0",
-    borderRadius: 10,
-    backgroundColor: "#FFFFFF",
-    marginBottom: 4,
+    borderColor: ORANGE_MID,
+    borderRadius: 12,
+    backgroundColor: CARD,
+    marginTop: 8,
     overflow: "hidden",
   },
   suggestionRow: {
     flexDirection: "row",
     alignItems: "center",
-    paddingVertical: 10,
+    paddingVertical: 11,
     paddingHorizontal: 12,
     borderBottomWidth: 1,
-    borderBottomColor: "#FFE8CC",
+    borderBottomColor: BORDER,
   },
   suggestionText: {
     fontSize: 13,
-    color: "#333",
+    color: TEXT,
     flex: 1,
   },
-  noResultsText: {
+  helperText: {
     fontSize: 12,
-    color: "#999",
+    color: MUTED,
     textAlign: "center",
-    paddingVertical: 6,
+    paddingVertical: 8,
   },
-
   coordsBadge: {
     flexDirection: "row",
     alignItems: "center",
     gap: 4,
-    marginBottom: 6,
-    marginTop: 2,
+    marginTop: 8,
   },
   coordsBadgeText: {
     fontSize: 11,
@@ -841,9 +960,9 @@ const styles = StyleSheet.create({
   modalBtnRow: {
     flexDirection: "row",
     gap: 10,
-    marginTop: 16,
+    marginTop: 18,
   },
-  modalSaveBtn: {
+  primaryBtn: {
     flex: 1,
     height: 50,
     backgroundColor: ORANGE,
@@ -851,12 +970,12 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  modalSaveBtnText: {
+  primaryBtnText: {
     fontSize: 15,
     fontWeight: "800",
-    color: "#fff",
+    color: "#FFFFFF",
   },
-  modalCancelBtn: {
+  secondaryBtn: {
     flex: 1,
     height: 50,
     backgroundColor: BG,
@@ -866,7 +985,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  modalCancelBtnText: {
+  secondaryBtnText: {
     fontSize: 15,
     fontWeight: "700",
     color: MUTED,
