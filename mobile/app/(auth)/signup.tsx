@@ -86,7 +86,7 @@ export default function SignupScreen() {
         dob: fields.dob,
         phone: fields.phone,
       });
-      router.replace('/(tabs)/map/maplibre');
+      router.replace('/(tabs)/map');
     } catch (e: any) {
       setError(friendlyError(e.code));
     }

@@ -32,7 +32,7 @@ GEOAPIFY_DETAILS_URL = "https://api.geoapify.com/v2/place-details"
 GEOAPIFY_CATEGORIES = {
     "hotels": "accommodation.hotel,accommodation.motel,accommodation.guest_house",
     "grocery": "commercial.supermarket",
-    "gas": "service.vehicle.fuel",
+    "gas": "commercial.gas",
     "convenience": "commercial.convenience",
     "hospital": "healthcare.hospital",
     "pharmacy": "healthcare.pharmacy",
@@ -852,12 +852,13 @@ async def get_nearby_places(
             },
         )
 
-    limit = max(1, min(limit, 100))
+
+    limit = max(1, min(limit, 50))
 
     # Snap coordinates to ~1km grid to share cache across nearby users
     snapped_lat = round(lat, COORD_PRECISION)
     snapped_lon = round(lon, COORD_PRECISION)
-    cache_key = f"ashguard:places:{type}:{snapped_lat}:{snapped_lon}:{radius}:{limit}"
+    cache_key = f"ashguard:places:{type}:{snapped_lat}:{snapped_lon}:{radius}"
 
     # Check and call the cache first, to reduce multiple API calls to Geoapify
     try:
@@ -1071,4 +1072,3 @@ async def get_self_reports():
             status_code=500,
             content={"detail": f"Failed to fetch self reports: {str(e)}"},
         )
-

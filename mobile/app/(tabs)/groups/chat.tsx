@@ -8,7 +8,6 @@ import {
   TextInput,
   KeyboardAvoidingView,
   Platform,
-  Image,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
@@ -51,7 +50,6 @@ export default function ChatScreen() {
 
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
-  const [chatPhoto, setChatPhoto] = useState('');
   const flatListRef = useRef<FlatList<Message>>(null);
 
   useEffect(() => {
@@ -189,33 +187,6 @@ export default function ChatScreen() {
     );
   };
 
-  useEffect(() => {
-    const loadChatHeader = async () => {
-      const currentUid = auth.currentUser?.uid;
-      if (!chatId || !currentUid) return;
-
-      try {
-        const chatRef = doc(db, 'chats', String(chatId));
-        const chatSnap = await getDoc(chatRef);
-
-        if (!chatSnap.exists()) return;
-
-        const chatData = chatSnap.data();
-        const participantDetails = chatData.participantDetails || {};
-        const entries = Object.entries(participantDetails) as [string, any][];
-
-        const otherUserEntry = entries.find(([uid]) => uid !== currentUid);
-        const otherUser = otherUserEntry ? otherUserEntry[1] : null;
-
-        setChatPhoto(otherUser?.photoURL || '');
-      } catch (error) {
-        console.log('Error loading chat header:', error);
-      }
-    };
-
-    loadChatHeader();
-  }, [chatId]);
-
   return (
     <>
       <StatusBar style="light" backgroundColor="#F58500" />
@@ -235,12 +206,8 @@ export default function ChatScreen() {
 
             <View style={styles.headerCenter}>
               <View style={styles.headerAvatar}>
-                {chatPhoto ? (
-                  <Image source={{ uri: chatPhoto }} style={styles.headerAvatarImage} />
-                ) : (
-                  <Ionicons name="person" size={22} color="#F58500" />
-                )}
-              </View>   
+                <Ionicons name="person" size={22} color="#F58500" />
+              </View>
 
               <Text style={styles.headerTitle} numberOfLines={1}>
                 {name || 'Chat'}
@@ -304,12 +271,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: 4,
-    overflow: 'hidden',
-  },
-  headerAvatarImage: {
-    width: '100%',
-    height: '100%',
-    borderRadius: 20,
   },
   headerTitle: { color: '#fff', fontSize: 16, fontWeight: '700' },
   headerRightSpacer: { width: 32 },

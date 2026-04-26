@@ -136,14 +136,14 @@ export default function TabsLayout() {
       <Tabs.Screen
         name="groups"
         options={{
-          tabBarIcon: ({ focused }) => <TabIcon icon="chatbubble" focused={focused} />,
+          tabBarIcon: ({ focused }) => <TabIcon icon="people" focused={focused} />,
         }}
       />
       <Tabs.Screen
         name="forum"
         options={{
           tabBarIcon: ({ focused }) => (
-            <TabIcon icon="people" focused={focused} />
+            <TabIcon icon="chatbubble" focused={focused} />
           ),
         }}
       />
@@ -155,7 +155,6 @@ export default function TabsLayout() {
       />
       {/* Hide resourcesSlider from being a tab */}
       <Tabs.Screen name="map/resourcesSlider" options={{ href: null }} />
-      <Tabs.Screen name="map/searchSheet" options={{ href: null }} />
     </Tabs>
   );
 }

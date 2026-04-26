@@ -6,7 +6,6 @@ import {
   TextInput,
   TouchableOpacity,
   FlatList,
-  Image,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
@@ -108,8 +107,6 @@ export default function GroupsScreen() {
       ? `${displayUser.firstName || ''} ${displayUser.lastName || ''}`.trim()
       : 'Unknown User';
 
-    const displayPhoto = displayUser?.photoURL || '';
-
     const previewText = item.lastMessage?.trim()
       ? item.lastMessage
       : 'Start a conversation';
@@ -132,14 +129,7 @@ export default function GroupsScreen() {
         }
       >
         <View style={styles.avatarWrap}>
-          {displayPhoto ? (
-            <Image source={{ uri: displayPhoto }} style={styles.avatar} />
-          ) : (
-            <View style={styles.avatar}>
-              <Ionicons name="person" size={24} color="#888" />
-            </View>
-          )}
-
+          <View style={styles.avatar} />
           {hasUnread ? <View style={styles.unreadDot} /> : null}
         </View>
 
@@ -375,9 +365,6 @@ const styles = StyleSheet.create({
     height: 56,
     borderRadius: 28,
     backgroundColor: '#D8D8D8',
-    alignItems: 'center',
-    justifyContent: 'center',
-    overflow: 'hidden',
   },
 
   unreadDot: {

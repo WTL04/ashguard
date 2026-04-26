@@ -44,16 +44,19 @@ type LatLng = {
   longitude: number;
 };
 
-// Mapbox token — add EXPO_PUBLIC_MAPBOX_TOKEN=pk.your_token_here to your .env
-const MAPBOX_TOKEN = process.env.EXPO_PUBLIC_MAPBOX_TOKEN ?? '';
-
-// Bias autocomplete toward Southern California
-const MAPBOX_PROXIMITY = '-118.2437,34.0522';
-
-type MapboxFeature = {
-  id: string;
-  place_name: string;
-  center: [number, number]; // [longitude, latitude]
+type PhotonFeature = {
+  geometry?: {
+    coordinates?: [number, number];
+  };
+  properties?: {
+    name?: string;
+    street?: string;
+    housenumber?: string;
+    city?: string;
+    state?: string;
+    country?: string;
+    postcode?: string;
+  };
 };
 
 type AddressSuggestion = {
@@ -97,10 +100,8 @@ const SHEET_EXPANDED = 0;
 const SHEET_COLLAPSED = PANEL_VISIBLE_HEIGHT - 68;
 
 const AVATAR_COLORS = ['#F58500', '#E07000', '#FB923C', '#C2410C', '#EA580C'];
-
 const getAvatarColor = (name: string) =>
   AVATAR_COLORS[name.charCodeAt(0) % AVATAR_COLORS.length];
-
 const getInitials = (name: string) =>
   name
     .split(' ')
@@ -108,6 +109,13 @@ const getInitials = (name: string) =>
     .slice(0, 2)
     .join('')
     .toUpperCase();
+
+function buildPhotonLabel(feature: PhotonFeature) {
+  const p = feature.properties ?? {};
+  const line1 = [p.name, p.street, p.housenumber].filter(Boolean).join(' ');
+  const line2 = [p.city, p.state, p.postcode, p.country].filter(Boolean).join(', ');
+  return [line1, line2].filter(Boolean).join(', ') || 'Selected meetup location';
+}
 
 function latLngToCoords(latlng: LatLng): [number, number] {
   return [latlng.longitude, latlng.latitude];
@@ -420,7 +428,7 @@ export default function LocationMeetupScreen() {
     animateTo({ latitude: lat, longitude: lng });
   };
 
-  const fetchMapboxSuggestions = async (input: string) => {
+  const fetchPhotonSuggestions = async (input: string) => {
     setSearchText(input);
     if (!input.trim()) {
       setSuggestions([]);
@@ -429,37 +437,29 @@ export default function LocationMeetupScreen() {
 
     try {
       setLoadingSuggestions(true);
-      // Use live user location as proximity when available, fall back to SoCal center
-      const proximity = userCoords
-        ? `${userCoords[0]},${userCoords[1]}`
-        : MAPBOX_PROXIMITY;
-
+      const searchCenter = userCoords ?? FALLBACK_COORDS;
       const url =
-        `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(input)}.json` +
-        `?access_token=${MAPBOX_TOKEN}` +
-        `&autocomplete=true` +
-        `&country=us` +
-        `&types=address,place,neighborhood,locality` +
-        `&proximity=${proximity}` +
-        `&limit=6`;
+        `https://photon.komoot.io/api/?q=${encodeURIComponent(input)}` +
+        `&limit=6&lat=${searchCenter[1]}&lon=${searchCenter[0]}`;
 
       const response = await fetch(url);
       const data = await response.json();
 
-      const nextSuggestions: AddressSuggestion[] = (data?.features ?? []).map(
-        (feature: MapboxFeature) => ({
-          id: feature.id,
-          label: feature.place_name,
-          coords: {
-            latitude: feature.center[1],
-            longitude: feature.center[0],
-          },
+      const nextSuggestions: AddressSuggestion[] = (data?.features ?? [])
+        .map((feature: PhotonFeature, index: number) => {
+          const c = feature.geometry?.coordinates;
+          if (!c || c.length < 2) return null;
+          return {
+            id: `${c[0]}_${c[1]}_${index}`,
+            label: buildPhotonLabel(feature),
+            coords: { latitude: c[1], longitude: c[0] },
+          };
         })
-      );
+        .filter(Boolean) as AddressSuggestion[];
 
       setSuggestions(nextSuggestions);
     } catch (error) {
-      console.log('Mapbox geocoding error:', error);
+      console.log('Photon search error:', error);
       setSuggestions([]);
     } finally {
       setLoadingSuggestions(false);
@@ -715,7 +715,7 @@ export default function LocationMeetupScreen() {
 
                   <TextInput
                     value={searchText}
-                    onChangeText={fetchMapboxSuggestions}
+                    onChangeText={fetchPhotonSuggestions}
                     style={styles.searchField}
                     placeholder="Enter address..."
                     placeholderTextColor="#BBAA99"
@@ -1203,6 +1203,9 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     letterSpacing: 0.5,
   },
+<<<<<<< HEAD
+});
+=======
 
   // ── Member Picker Modal ──────────────────────────────────────────────────
   modalBackdrop: {
@@ -1331,3 +1334,4 @@ const styles = StyleSheet.create({
     fontWeight: '500',
   },
 });
+>>>>>>> 806ee11 (Location of others & UI fixes)

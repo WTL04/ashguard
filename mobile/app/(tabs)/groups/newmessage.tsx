@@ -6,7 +6,6 @@ import {
   TouchableOpacity,
   TextInput,
   FlatList,
-  Image,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
@@ -164,13 +163,9 @@ export default function NewMessageScreen() {
         }}
       >
         <View style={styles.contactLeft}>
-          {item.photoURL ? (
-            <Image source={{ uri: item.photoURL }} style={styles.avatarImage} />
-          ) : (
-            <View style={styles.avatarFallback}>
-              <Ionicons name="person" size={16} color="#888" />
-            </View>
-          )}
+          <View style={styles.avatarFallback}>
+            <Ionicons name="person" size={16} color="#888" />
+          </View>
 
           <View>
             <Text style={styles.contactName}>
@@ -330,10 +325,4 @@ const styles = StyleSheet.create({
     color: '#666',
     marginTop: 2,
   },
-  avatarImage: {
-  width: 34,
-  height: 34,
-  borderRadius: 17,
-  marginRight: 10,
-},
 });
