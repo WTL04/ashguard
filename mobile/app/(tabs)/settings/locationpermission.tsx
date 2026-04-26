@@ -1,88 +1,194 @@
 import React, { useState } from "react";
-import { View, Text, StyleSheet, Pressable, Switch } from "react-native";
+import { View, Text, StyleSheet, Pressable, Switch, Platform } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 
-const BG = "#FFFFFF";
-const CARD = "#F6F6F6";
-const BORDER = "#E5E7EB";
-const TEXT = "#111111";
-const ORANGE = "#F59E0B";
+const ORANGE = "#F58500";
+const ORANGE_LIGHT = "#FFF4E6";
+const ORANGE_MID = "#FFE0B2";
+const BG = "#FAF8F5";
+const CARD = "#FFFFFF";
+const BORDER = "#F0EBE3";
+const TEXT = "#1A1614";
+const MUTED = "#9B9189";
+const TEAL = "#0F9D94";
 
-function TopBar({ title }: { title: string }) {
-  const router = useRouter();
-  return (
-    <View style={styles.topBar}>
-      <Pressable onPress={() => router.back()} hitSlop={10} style={styles.backBtn}>
-        <Ionicons name="chevron-back" size={22} color={TEXT} />
-      </Pressable>
-      <Text style={styles.topTitle}>{title}</Text>
-      <View style={{ width: 34 }} />
-    </View>
-  );
-}
-
-function ToggleRow({
-  label,
-  value,
-  onChange,
-}: {
+type RowConfig = {
+  key: keyof { tracking: boolean; display: boolean };
   label: string;
-  value: boolean;
-  onChange: (v: boolean) => void;
-}) {
-  return (
-    <View style={styles.row}>
-      <Text style={styles.rowText}>{label}</Text>
-      <Switch
-        value={value}
-        onValueChange={onChange}
-        trackColor={{ false: "#FFFFFF", true: "#F59E0B" }}
-        thumbColor={value ? BG : "#FFFFFF"}
-      />
-    </View>
-  );
-}
+  description: string;
+  icon: string;
+};
+
+const ROWS: RowConfig[] = [
+  {
+    key: "tracking",
+    label: "Allow Location Tracking",
+    description: "Let the app access your device's GPS location",
+    icon: "navigate-outline",
+  },
+  {
+    key: "display",
+    label: "Display Location",
+    description: "Share your location with your emergency group",
+    icon: "people-outline",
+  },
+];
 
 export default function LocationPermissionScreen() {
-  const [tracking, setTracking] = useState(true);
-  const [display, setDisplay] = useState(false);
+  const router = useRouter();
+  const [values, setValues] = useState({ tracking: true, display: false });
+
+  const toggle = (key: keyof typeof values) =>
+    setValues((prev) => ({ ...prev, [key]: !prev[key] }));
 
   return (
     <SafeAreaView style={styles.container} edges={["top"]}>
-      <TopBar title="Location Permissions" />
+      {/* Header */}
+      <View style={styles.header}>
+        <Pressable onPress={() => router.back()} style={styles.backBtn} hitSlop={10}>
+          <Ionicons name="chevron-back" size={22} color={TEXT} />
+        </Pressable>
+        <Text style={styles.headerTitle}>Location Permissions</Text>
+        <View style={{ width: 38 }} />
+      </View>
 
-      <View style={{ marginTop: 14, gap: 10 }}>
-        <ToggleRow label="Allow Location Tracking" value={tracking} onChange={setTracking} />
-        <ToggleRow label="Display Location" value={display} onChange={setDisplay} />
+      <View style={styles.content}>
+        <Text style={styles.sectionHeader}>PERMISSIONS</Text>
+        <View style={styles.card}>
+          {ROWS.map((row, index) => (
+            <View key={row.key}>
+              {index > 0 && <View style={styles.divider} />}
+              <View style={styles.row}>
+                <View style={[styles.iconWrap, values[row.key] && styles.iconWrapActive]}>
+                  <Ionicons
+                    name={row.icon as any}
+                    size={16}
+                    color={values[row.key] ? ORANGE : MUTED}
+                  />
+                </View>
+                <View style={styles.rowText}>
+                  <Text style={styles.rowLabel}>{row.label}</Text>
+                  <Text style={styles.rowDesc}>{row.description}</Text>
+                </View>
+                <Switch
+                  value={values[row.key]}
+                  onValueChange={() => toggle(row.key)}
+                  trackColor={{ false: "#E8E2DA", true: ORANGE }}
+                  thumbColor="#fff"
+                  style={Platform.OS === "ios" ? { transform: [{ scaleX: 0.82 }, { scaleY: 0.82 }] } : undefined}
+                />
+              </View>
+            </View>
+          ))}
+        </View>
       </View>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: BG, paddingHorizontal: 18 },
+  container: {
+    flex: 1,
+    backgroundColor: BG,
+  },
 
-  topBar: {
-    paddingTop: 6,
-    paddingBottom: 14,
+  header: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: BORDER,
+    backgroundColor: BG,
+  },
+  backBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 12,
+    backgroundColor: CARD,
+    borderWidth: 1,
+    borderColor: BORDER,
     alignItems: "center",
     justifyContent: "center",
   },
-  backBtn: { position: "absolute", left: 0, top: 6, padding: 6 },
-  topTitle: { fontSize: 18, fontWeight: "700", color: TEXT },
+  headerTitle: {
+    fontSize: 17,
+    fontWeight: "700",
+    color: TEXT,
+    letterSpacing: -0.3,
+  },
 
-  row: {
+  content: {
+    paddingHorizontal: 16,
+    paddingTop: 20,
+  },
+
+  sectionHeader: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: MUTED,
+    letterSpacing: 1.2,
+    marginBottom: 10,
+    marginLeft: 4,
+  },
+
+  card: {
     backgroundColor: CARD,
-    borderRadius: 6,
+    borderRadius: 18,
     borderWidth: 1,
     borderColor: BORDER,
-    paddingVertical: 12,
-    paddingHorizontal: 12,
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
+    overflow: "hidden",
+    shadowColor: "#000",
+    shadowOpacity: 0.04,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 1,
   },
-  rowText: { fontSize: 13, fontWeight: "600", color: TEXT },
+
+  row: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 16,
+    paddingVertical: 16,
+    gap: 14,
+  },
+
+  iconWrap: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    backgroundColor: "#F3F4F6",
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: BORDER,
+  },
+  iconWrapActive: {
+    backgroundColor: ORANGE_LIGHT,
+    borderColor: ORANGE_MID,
+  },
+
+  rowText: {
+    flex: 1,
+  },
+  rowLabel: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: TEXT,
+    marginBottom: 3,
+  },
+  rowDesc: {
+    fontSize: 12,
+    color: MUTED,
+    lineHeight: 16,
+  },
+
+  divider: {
+    height: 1,
+    backgroundColor: BORDER,
+    marginHorizontal: 16,
+  },
 });

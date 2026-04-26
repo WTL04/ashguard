@@ -15,12 +15,13 @@ import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Contacts from 'expo-contacts';
+import { collection, getDocs } from 'firebase/firestore';
+import { db } from '@/lib/firebaseConfig';
 
 const GROUP_NAME_KEY = 'emergency_group_name';
 const GROUP_MEMBERS_KEY = 'emergency_group_members';
 
 type SafetyStatus = 'SAFE' | 'NEED HELP!' | 'IN DANGER';
-
 const DEFAULT_STATUS: SafetyStatus = 'SAFE';
 
 type Member = {
@@ -29,7 +30,22 @@ type Member = {
   avatar: string;
   status: SafetyStatus;
   phoneNumber?: string;
+  uid?: string;
+  source: 'contact' | 'firestore';
 };
+
+const AVATAR_COLORS = ['#F58500', '#E07000', '#FB923C', '#C2410C', '#EA580C'];
+
+const getAvatarColor = (name: string) =>
+  AVATAR_COLORS[name.charCodeAt(0) % AVATAR_COLORS.length];
+
+const getInitials = (name: string) =>
+  name
+    .split(' ')
+    .map((w) => w[0])
+    .slice(0, 2)
+    .join('')
+    .toUpperCase();
 
 export default function AddMembersScreen() {
   const insets = useSafeAreaInsets();
@@ -39,92 +55,99 @@ export default function AddMembersScreen() {
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [contacts, setContacts] = useState<Member[]>([]);
   const [loading, setLoading] = useState(true);
-  const [permissionDenied, setPermissionDenied] = useState(false);
 
   useEffect(() => {
-    loadGroupName();
-    loadPhoneContacts();
+    loadInitialData();
   }, []);
 
-  const loadGroupName = async () => {
-    const saved = await AsyncStorage.getItem(GROUP_NAME_KEY);
-    if (saved) setGroupName(saved);
-  };
-
-  const loadPhoneContacts = async () => {
+  const loadInitialData = async () => {
     try {
       setLoading(true);
 
-      const { status } = await Contacts.requestPermissionsAsync();
+      const saved = await AsyncStorage.getItem(GROUP_NAME_KEY);
+      if (saved) setGroupName(saved);
 
-      if (status !== 'granted') {
-        setPermissionDenied(true);
-        setLoading(false);
-        return;
-      }
+      const [phoneContacts, firestoreUsers] = await Promise.all([
+        loadPhoneContacts(),
+        loadFirestoreUsers(),
+      ]);
 
-      const response = await Contacts.getContactsAsync({
-        fields: [
-          Contacts.Fields.Name,
-          Contacts.Fields.PhoneNumbers,
-          Contacts.Fields.Image,
-        ],
-      });
+      const map = new Map<string, Member>();
+      [...phoneContacts, ...firestoreUsers].forEach((p) => map.set(p.id, p));
 
-      const formattedContacts: Member[] = (response.data || [])
-        .filter((contact) => {
-          const hasName =
-            typeof contact.name === 'string' && contact.name.trim().length > 0;
-
-          const hasPhone =
-            Array.isArray(contact.phoneNumbers) &&
-            contact.phoneNumbers.length > 0 &&
-            !!contact.phoneNumbers[0]?.number;
-
-          return hasName && hasPhone;
-        })
-        .map((contact) => ({
-          id: String(contact.id),
-          name: contact.name!.trim(),
-          avatar:
-            contact.imageAvailable && contact.image?.uri
-              ? contact.image.uri
-              : '',
-          status: DEFAULT_STATUS, 
-          phoneNumber: contact.phoneNumbers?.[0]?.number ?? '',
-        }))
-        .sort((a, b) => a.name.localeCompare(b.name));
-
-      setContacts(formattedContacts);
-    } catch (error) {
-      console.log('Error loading contacts:', error);
-      Alert.alert('Error', 'Could not load contacts.');
+      setContacts(
+        Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name))
+      );
+    } catch (e) {
+      Alert.alert('Error', 'Could not load users');
     } finally {
       setLoading(false);
     }
   };
 
+  const loadPhoneContacts = async (): Promise<Member[]> => {
+    try {
+      const { status } = await Contacts.requestPermissionsAsync();
+      if (status !== 'granted') return [];
+
+      const res = await Contacts.getContactsAsync({
+        fields: [Contacts.Fields.Name, Contacts.Fields.PhoneNumbers, Contacts.Fields.Image],
+      });
+
+      return (res.data || [])
+        .filter((c) => c.name && c.phoneNumbers && c.phoneNumbers[0]?.number)
+        .map((c) => ({
+          id: `contact-${c.id}`,
+          name: c.name!,
+          avatar: c.imageAvailable && c.image?.uri ? c.image.uri : '',
+          status: DEFAULT_STATUS,
+          phoneNumber: c.phoneNumbers?.[0]?.number ?? '',
+          source: 'contact',
+        }));
+    } catch {
+      return [];
+    }
+  };
+
+  const loadFirestoreUsers = async (): Promise<Member[]> => {
+    try {
+      const snap = await getDocs(collection(db, 'users'));
+
+      return snap.docs.map((doc) => {
+        const d = doc.data();
+        const uid = d.uid || doc.id;
+
+        return {
+          id: `firestore-${uid}`,
+          uid,
+          name: `${d.firstName || ''} ${d.lastName || ''}`.trim() || d.username || 'User',
+          avatar: d.photoURL || '',
+          status: DEFAULT_STATUS,
+          phoneNumber: d.phone || '',
+          source: 'firestore',
+        };
+      });
+    } catch {
+      return [];
+    }
+  };
+
   const groupedContacts = useMemo(() => {
-    const filtered = contacts.filter((contact) =>
-      contact.name.toLowerCase().includes(search.toLowerCase())
+    const filtered = contacts.filter((c) =>
+      `${c.name} ${c.phoneNumber || ''}`.toLowerCase().includes(search.toLowerCase())
     );
 
     const grouped: Record<string, Member[]> = {};
-
-    filtered.forEach((contact) => {
-      const firstChar = contact.name.charAt(0).toUpperCase();
+    filtered.forEach((c) => {
+      const firstChar = c.name.charAt(0).toUpperCase();
       const letter = /[A-Z]/.test(firstChar) ? firstChar : '#';
-
       if (!grouped[letter]) grouped[letter] = [];
-      grouped[letter].push(contact);
+      grouped[letter].push(c);
     });
 
     return Object.keys(grouped)
       .sort()
-      .map((letter) => ({
-        title: letter,
-        data: grouped[letter],
-      }));
+      .map((k) => ({ title: k, data: grouped[k] }));
   }, [contacts, search]);
 
   const toggleSelect = (id: string) => {
@@ -139,7 +162,6 @@ export default function AddMembersScreen() {
       const existing: Member[] = existingRaw ? JSON.parse(existingRaw) : [];
 
       const selected = contacts.filter((c) => selectedIds.includes(c.id));
-
       const merged = [...existing];
 
       selected.forEach((c) => {
@@ -150,8 +172,8 @@ export default function AddMembersScreen() {
 
       await AsyncStorage.setItem(GROUP_MEMBERS_KEY, JSON.stringify(merged));
       router.back();
-    } catch (error) {
-      console.log('Error saving members:', error);
+    } catch {
+      Alert.alert('Error', 'Could not save selected members.');
     }
   };
 
@@ -160,23 +182,39 @@ export default function AddMembersScreen() {
 
     return (
       <TouchableOpacity
-        style={[styles.row, selected && styles.rowSelected]}
+        style={[styles.card, selected && styles.cardSelected]}
         onPress={() => toggleSelect(item.id)}
+        activeOpacity={0.75}
       >
-        <View style={styles.left}>
-          {item.avatar ? (
-            <Image source={{ uri: item.avatar }} style={styles.avatar} />
-          ) : (
-            <View style={styles.avatarFallback}>
-              <Ionicons name="person" size={14} color="#888" />
-            </View>
-          )}
-          <Text style={[styles.name, selected && styles.nameSelected]}>
+        {item.avatar ? (
+          <Image source={{ uri: item.avatar }} style={styles.avatar} />
+        ) : (
+          <View
+            style={[
+              styles.avatarFallback,
+              { backgroundColor: getAvatarColor(item.name) },
+            ]}
+          >
+            <Text style={styles.initials}>{getInitials(item.name)}</Text>
+          </View>
+        )}
+
+        <View style={styles.textWrap}>
+          <Text style={styles.name} numberOfLines={1}>
             {item.name}
           </Text>
+          {!!item.phoneNumber && (
+            <Text style={styles.subText} numberOfLines={1}>
+              {item.phoneNumber}
+            </Text>
+          )}
         </View>
 
-        {selected && <Ionicons name="checkmark" size={22} color="#fff" />}
+        {selected && (
+          <View style={styles.checkCircle}>
+            <Ionicons name="checkmark" size={15} color="#fff" />
+          </View>
+        )}
       </TouchableOpacity>
     );
   };
@@ -186,51 +224,72 @@ export default function AddMembersScreen() {
       <StatusBar style="light" backgroundColor="#F58500" />
 
       <SafeAreaView style={styles.container} edges={['bottom']}>
-        <View style={styles.screen}>
-          <View style={[styles.header, { paddingTop: insets.top + 10 }]}>
-            <TouchableOpacity onPress={() => router.back()}>
-              <Ionicons name="chevron-back" size={26} color="#fff" />
-            </TouchableOpacity>
+        <View style={[styles.header, { paddingTop: insets.top + 10 }]}>
+          <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
+            <Ionicons name="chevron-back" size={24} color="#fff" />
+          </TouchableOpacity>
 
-            <View style={styles.headerTitleWrap}>
-              <Text style={styles.headerTitle}>{groupName}</Text>
-            </View>
+          <View style={styles.headerTitleWrap}>
+            <Text style={styles.headerTitle}>{groupName}</Text>
+            <Text style={styles.subtitle}>Add members</Text>
           </View>
 
-          <View style={styles.content}>
-            <View style={styles.searchBar}>
-              <Ionicons name="search" size={16} color="#666" />
-              <TextInput
-                placeholder="Search"
-                value={search}
-                onChangeText={setSearch}
-                style={styles.searchInput}
-              />
-            </View>
+          <View style={{ width: 36 }} />
+        </View>
 
-            {loading ? (
-              <Text style={styles.center}>Loading contacts...</Text>
-            ) : permissionDenied ? (
-              <Text style={styles.center}>Permission denied</Text>
-            ) : (
-              <SectionList
-                sections={groupedContacts}
-                keyExtractor={(item) => item.id}
-                renderItem={renderItem}
-                renderSectionHeader={({ section: { title } }) => (
-                  <Text style={styles.section}>{title}</Text>
-                )}
-              />
+        <View style={styles.content}>
+          <View style={styles.searchBar}>
+            <Ionicons name="search" size={17} color="#9CA3AF" />
+            <TextInput
+              placeholder="Search by name or number"
+              placeholderTextColor="#9CA3AF"
+              value={search}
+              onChangeText={setSearch}
+              style={styles.searchInput}
+            />
+            {search.length > 0 && (
+              <TouchableOpacity onPress={() => setSearch('')}>
+                <Ionicons name="close-circle" size={17} color="#9CA3AF" />
+              </TouchableOpacity>
             )}
-
-            <TouchableOpacity style={styles.fab} onPress={saveSelectedMembers}>
-              <Ionicons
-                name={selectedIds.length > 0 ? 'checkmark' : 'add'}
-                size={28}
-                color="#fff"
-              />
-            </TouchableOpacity>
           </View>
+
+          {selectedIds.length > 0 && (
+            <View style={styles.selectionChip}>
+              <Ionicons name="checkmark-circle" size={13} color="#F58500" />
+              <Text style={styles.selectionChipText}>{selectedIds.length} selected</Text>
+            </View>
+          )}
+
+          {loading ? (
+            <View style={styles.emptyState}>
+              <Ionicons name="hourglass-outline" size={36} color="#D1D5DB" />
+              <Text style={styles.emptyText}>Loading contacts…</Text>
+            </View>
+          ) : (
+            <SectionList
+              sections={groupedContacts}
+              keyExtractor={(item) => item.id}
+              renderItem={renderItem}
+              renderSectionHeader={({ section: { title } }) => (
+                <View style={styles.sectionRow}>
+                  <Text style={styles.sectionLetter}>{title}</Text>
+                  <View style={styles.sectionLine} />
+                </View>
+              )}
+              contentContainerStyle={{ paddingBottom: 110, paddingTop: 4 }}
+              showsVerticalScrollIndicator={false}
+              stickySectionHeadersEnabled={false}
+            />
+          )}
+
+          <TouchableOpacity
+            style={styles.fab}
+            onPress={saveSelectedMembers}
+            activeOpacity={0.85}
+          >
+            <Ionicons name="add" size={32} color="#fff" />
+          </TouchableOpacity>
         </View>
       </SafeAreaView>
     </>
@@ -238,8 +297,10 @@ export default function AddMembersScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F3F3F3' },
-  screen: { flex: 1 },
+  container: {
+    flex: 1,
+    backgroundColor: '#F4F1EC',
+  },
 
   header: {
     backgroundColor: '#F58500',
@@ -248,96 +309,194 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingBottom: 20,
   },
-
+  backBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 12,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   headerTitleWrap: {
     flex: 1,
     alignItems: 'center',
   },
-
   headerTitle: {
-    fontSize: 16,
-    fontWeight: '700',
+    fontSize: 17,
+    fontWeight: '800',
     color: '#fff',
+    letterSpacing: 0.2,
+  },
+  subtitle: {
+    fontSize: 12,
+    color: '#fff',
+    opacity: 0.85,
+    marginTop: 1,
   },
 
-  content: { flex: 1, padding: 16 },
+  content: {
+    flex: 1,
+    paddingHorizontal: 16,
+    paddingTop: 16,
+  },
 
   searchBar: {
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: '#EEE3D2',
+    height: 48,
+    borderRadius: 14,
+    backgroundColor: '#fff',
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 12,
+    paddingHorizontal: 14,
+    gap: 8,
     marginBottom: 10,
+    shadowColor: '#C07020',
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 2,
+    borderWidth: 1,
+    borderColor: '#F0E8DC',
+  },
+  searchInput: {
+    flex: 1,
+    fontSize: 14,
+    color: '#111827',
   },
 
-  searchInput: { flex: 1, marginLeft: 6 },
-
-  section: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#D17800',
-    marginVertical: 6,
-  },
-
-  row: {
-    backgroundColor: '#EEE3D2',
-    padding: 10,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-  },
-
-  rowSelected: {
-    backgroundColor: '#57D400',
-  },
-
-  left: {
+  selectionChip: {
     flexDirection: 'row',
     alignItems: 'center',
+    gap: 5,
+    alignSelf: 'flex-start',
+    backgroundColor: '#FFF0DE',
+    borderWidth: 1,
+    borderColor: '#FED7AA',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 20,
+    marginBottom: 8,
+  },
+  selectionChipText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#F58500',
+  },
+
+  sectionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 14,
+    marginBottom: 6,
+  },
+  sectionLetter: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: '#F58500',
+    width: 16,
+  },
+  sectionLine: {
     flex: 1,
+    height: 1,
+    backgroundColor: '#EDE5D8',
+  },
+
+  card: {
+    backgroundColor: '#fff',
+    borderRadius: 18,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    marginBottom: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    shadowColor: '#C07020',
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 3 },
+    elevation: 2,
+    borderWidth: 1,
+    borderColor: '#F0E8DC',
+  },
+  cardSelected: {
+    borderColor: '#F58500',
+    backgroundColor: '#FFF7ED',
   },
 
   avatar: {
-    width: 24,
-    height: 24,
-    borderRadius: 12,
-    marginRight: 10,
+    width: 44,
+    height: 44,
+    borderRadius: 13,
+    marginRight: 12,
+  },
+  avatarFallback: {
+    width: 44,
+    height: 44,
+    borderRadius: 13,
+    marginRight: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  initials: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: '#fff',
   },
 
-  avatarFallback: {
-    width: 24,
-    height: 24,
-    borderRadius: 12,
-    backgroundColor: '#DDD',
-    marginRight: 10,
+  textWrap: {
+    flex: 1,
+  },
+  name: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: '#1C1410',
+  },
+  subText: {
+    fontSize: 12,
+    color: '#B07830',
+    marginTop: 2,
+  },
+  sourceText: {
+    fontSize: 11,
+    color: '#9CA3AF',
+    marginTop: 3,
+    fontWeight: '600',
+  },
+
+  checkCircle: {
+    width: 28,
+    height: 28,
+    borderRadius: 9,
+    backgroundColor: '#F58500',
     alignItems: 'center',
     justifyContent: 'center',
   },
 
-  name: {
-    fontSize: 15,
-    fontWeight: '700',
+  emptyState: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
   },
-
-  nameSelected: {
-    color: '#fff',
-  },
-
-  center: {
-    textAlign: 'center',
-    marginTop: 40,
+  emptyText: {
+    fontSize: 14,
+    color: '#9CA3AF',
+    fontWeight: '500',
   },
 
   fab: {
     position: 'absolute',
     right: 20,
-    bottom: 20,
-    width: 54,
-    height: 54,
-    borderRadius: 27,
+    bottom: 28,
+    width: 62,
+    height: 62,
+    borderRadius: 20,
     backgroundColor: '#F58500',
     alignItems: 'center',
     justifyContent: 'center',
+    shadowColor: '#F58500',
+    shadowOpacity: 0.4,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 5 },
+    elevation: 8,
   },
 });
