@@ -32,6 +32,7 @@ async def create_chat(
     other_uid = payload.other_uid
 
     # deterministic chatId -- same two users always get same chat
+    # example: userA_uid creates a chat with userB_uid -> chat_id : userA_uid_userB_uid
     chat_id = "_".join(sorted([sender_uid, other_uid]))
 
     chat_ref = db.collection("chats").document(chat_id)
@@ -46,6 +47,8 @@ async def create_chat(
     other_snap = await db.collection("users").document(other_uid).get()
 
     if not sender_snap.exists or not other_snap.exists:
+        print(f"DEBUG: Sender UID: '{sender_uid}', Exists: {sender_snap.exists}")
+        print(f"DEBUG: Other UID: '{other_uid}', Exists: {other_snap.exists}")
         raise HTTPException(status_code=404, detail="One or more users not found")
 
     sender_data = sender_snap.to_dict()

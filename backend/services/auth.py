@@ -18,5 +18,6 @@ async def verify_token(
     try:
         decoded = auth.verify_id_token(token)
         return decoded["uid"]
-    except Exception:
+    except Exception as e:
+        print(f"Firebase Auth Error: {e}")  # Log the actual error to your console
         raise HTTPException(status_code=401, detail="Invalid or expired token")
