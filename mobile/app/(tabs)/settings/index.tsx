@@ -109,14 +109,31 @@ export default function SettingsScreen() {
     }, [])
   );
 
-  const handleLogout = async () => {
-    try {
-      await logOut();
-      router.replace("/login");
-    } catch (error) {
-      console.error("Logout error:", error);
-      Alert.alert("Error", "Unable to log out right now.");
-    }
+  const handleLogout = () => {
+    Alert.alert(
+      "Log Out",
+      "Are you sure you want to log out?",
+      [
+        {
+          text: "Cancel",
+          style: "cancel",
+        },
+        {
+          text: "Log Out",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              await logOut();
+              router.replace("/login");
+            } catch (error) {
+              console.error("Logout error:", error);
+              Alert.alert("Error", "Unable to log out right now.");
+            }
+          },
+        },
+      ],
+      { cancelable: true }
+    );
   };
 
   const fullName =
