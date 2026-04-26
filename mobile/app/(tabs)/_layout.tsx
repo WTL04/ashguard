@@ -52,14 +52,14 @@ export default function TabsLayout() {
       <Tabs.Screen
         name="groups"
         options={{
-          tabBarIcon: ({ focused }) => <TabIcon icon="people" focused={focused} />,
+          tabBarIcon: ({ focused }) => <TabIcon icon="chatbubble" focused={focused} />,
         }}
       />
       <Tabs.Screen
         name="forum"
         options={{
           tabBarIcon: ({ focused }) => (
-            <TabIcon icon="chatbubble" focused={focused} />
+            <TabIcon icon="people" focused={focused} />
           ),
         }}
       />

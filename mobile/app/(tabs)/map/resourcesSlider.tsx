@@ -32,6 +32,7 @@ type ResourceBottomSheetProps = {
   onClose?: () => void;
   /** Called when user drags the sheet above the hidden position */
   onOpen?: () => void;
+  topInset?: number;
 };
 
 // ── Resource chip config ──────────────────────────────────────────────────────
@@ -110,9 +111,10 @@ export default function ResourceBottomSheet({
   onSelectPlace,
   onClose,
   onOpen,
+  topInset,
 }: ResourceBottomSheetProps) {
     const bottomSheetRef = useRef<BottomSheet>(null);
-    const snapPoints = useMemo(() => [28, "36%", "52%", "68%", "90%"], []);
+    const snapPoints = useMemo(() => [28, "41%", "52%", "68%", "90%"], []);
     const insets = useSafeAreaInsets();
 
     const milesValue = Math.round(distanceRadius / 1609.34);
@@ -136,11 +138,11 @@ export default function ResourceBottomSheet({
   return (
     <BottomSheet
       ref={bottomSheetRef}
-      index={-1}
+      index={0}
       snapPoints={snapPoints}
       enablePanDownToClose={false}
       enableContentPanningGesture={false}
-      topInset={insets.top}
+      topInset={topInset ?? insets.top}
       handleIndicatorStyle={styles.handle}
       backgroundStyle={styles.sheetBackground}
       onChange={(index) => {
