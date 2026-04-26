@@ -322,6 +322,11 @@ export default function MapLibre() {
   // ── Search state ────────────────────────────────────────────────────────────
   const [search, setSearch] = useState('');
   const [searchSheetOpen, setSearchSheetOpen] = useState(false);
+  // Pin dropped on the map when a suggestion or saved place is selected from search
+  const [selectedSearchPin, setSelectedSearchPin] = useState<{
+    coordinate: [number, number];
+    label: string;
+  } | null>(null);
 
   // Mapbox autocomplete hook — debounced, typed, ready to use
   const { suggestions: searchSuggestions, loading: searchLoading, search: runSearch, clear: clearSearch } = useMapboxSearch();
@@ -348,7 +353,8 @@ export default function MapLibre() {
   const [nearbyPlaces, setNearbyPlaces] = useState<NearbyPlace[]>([]);
   const [selectedPlaceId, setSelectedPlaceId] = useState<string | null>(null);
   const [resourceType, setResourceType] = useState<ResourceFilterType>('all');
-  const [sheetOpen, setSheetOpen] = useState(false);
+  const [sheetOpen, setSheetOpen] = useState(true);
+  const [filterBarBottom, setFilterBarBottom] = useState(0);
   const [distanceRadius, setDistanceRadius] = useState(5 * 1609);
   // Track if resource sheet was open before search opened, so we can restore it
   const resourceSheetWasOpenRef = useRef(false);
@@ -365,6 +371,7 @@ export default function MapLibre() {
   const [homeCoords, setHomeCoords]               = useState<UserLatLng | null>(null);
   const [savedPlaces, setSavedPlaces]             = useState<UserSavedPlace[]>([]);
   const [selectedSavedPlaceId, setSelectedSavedPlaceId] = useState<string | null>(null);
+  const [searchSelectedChipId, setSearchSelectedChipId] = useState<string | null>(null);
 
   useFocusEffect(
     React.useCallback(() => {
@@ -988,12 +995,18 @@ export default function MapLibre() {
 
   const handleSelectSuggestion = (suggestion: MapboxSuggestion) => {
     const [lon, lat] = suggestion.coords;
-    setSearch(suggestion.shortLabel);
-    setSearchSheetOpen(false);
-    clearSearch();
-    clearSelections();
-    focusCameraOnCoordinate([lon, lat], 14);
-    // Don't restore resource sheet — user navigated to a new place
+    const coord: [number, number] = [lon, lat];
+    // Keep the search sheet open so the selected card (with Get Directions) is visible
+    // Clear other map selections but do NOT close the sheet
+    setSelectedData(null);
+    setSelectedStation(null);
+    setSelectedPlaceId(null);
+    setSelectedFireId(null);
+    setSelectedWeatherId(null);
+    setSelectedSavedPlaceId(null);
+    // Drop a search pin on the map
+    setSelectedSearchPin({ coordinate: coord, label: suggestion.shortLabel });
+    focusCameraOnCoordinate(coord, 14);
     resourceSheetWasOpenRef.current = false;
   };
 
@@ -1005,11 +1018,11 @@ export default function MapLibre() {
     isHome?: boolean;
   }) => {
     clearSelections();
-    setSelectedSavedPlaceId(location.id);
+    // Drop a search pin so the map shows a marker
+    setSearchSelectedChipId(location.id);
+    setSelectedSearchPin({ coordinate: location.coordinate, label: location.label });
     focusCameraOnCoordinate(location.coordinate, 15);
-    setSearch(location.label);
-    setSearchSheetOpen(false);
-    clearSearch();
+    // Keep the search sheet open so the selected card (with Get Directions) is visible
     resourceSheetWasOpenRef.current = false;
   };
 
@@ -1019,6 +1032,10 @@ export default function MapLibre() {
 
     setSearchSheetOpen(false);
     clearSearch();
+    setSearch('');
+    setSelectedSearchPin(null);
+    setSelectedSavedPlaceId(null);
+    setSearchSelectedChipId(null); 
 
     // Restore resource sheet if it was open before search was triggered
     if (resourceSheetWasOpenRef.current) {
@@ -1103,6 +1120,7 @@ export default function MapLibre() {
       label: string;
       icon: keyof typeof Ionicons.glyphMap;
       coordinate: [number, number];
+      address?: string;
       isHome?: boolean;
     }> = [];
 
@@ -1112,6 +1130,7 @@ export default function MapLibre() {
         label: 'Home',
         icon: 'home',
         coordinate: [homeCoords.longitude, homeCoords.latitude],
+        address: homeAddress ?? undefined,
         isHome: true,
       });
     }
@@ -1124,6 +1143,7 @@ export default function MapLibre() {
           label: place.nickname,
           icon: 'bookmark',
           coordinate: [place.coords.longitude, place.coords.latitude],
+          address: place.address,
         });
       });
 
@@ -1438,6 +1458,21 @@ export default function MapLibre() {
                 </PointAnnotation>
               );
             })}
+        {/* ── Search result pin ─────────────────────────────────────────────── */}
+        {selectedSearchPin && (
+          <PointAnnotation
+            key={`search-pin-${selectedSearchPin.coordinate[0]}-${selectedSearchPin.coordinate[1]}`}
+            id="search-result-pin"
+            coordinate={selectedSearchPin.coordinate}
+          >
+            <View style={styles.searchPinAnnotation}>
+              <View style={styles.searchPinCircle}>
+                <Ionicons name="location" size={16} color="#FFFFFF" />
+              </View>
+              <View style={styles.searchPinTail} />
+            </View>
+          </PointAnnotation>
+        )}
       </MapView>
 
       {!mapReady && (
@@ -1508,6 +1543,10 @@ export default function MapLibre() {
           showsHorizontalScrollIndicator={false}
           contentContainerStyle={styles.filtersRow}
           style={styles.filtersScroll}
+          onLayout={(e) => {
+            const { y, height } = e.nativeEvent.layout;
+            setFilterBarBottom(y + height + 4); // +4px breathing room
+          }}
         >
           {FILTERS.map((f) => {
             const active = activeFilter === f.id;
@@ -1615,15 +1654,6 @@ export default function MapLibre() {
 
         {/* ── FAB buttons ───────────────────────────────────────────────────── */}
         <View style={styles.fab} pointerEvents="box-none">
-          <TouchableOpacity
-            style={styles.roundMapButton}
-            activeOpacity={0.85}
-            accessibilityRole="button"
-            accessibilityLabel="Layers"
-          >
-            <Ionicons name="layers-outline" size={20} color="#fff" />
-          </TouchableOpacity>
-
           <TouchableOpacity
             style={styles.roundMapButton}
             activeOpacity={0.85}
@@ -1765,55 +1795,6 @@ export default function MapLibre() {
           </View>
         )}
 
-        {/* ── Saved place popup ─────────────────────────────────────────────── */}
-        {selectedSavedPlaceId && (
-          <View style={[styles.popup, styles.savedPlacePopup]} pointerEvents="box-none">
-            <TouchableOpacity
-              style={[styles.popupClose, { padding: 8, marginRight: -8, marginTop: -8 }]}
-              onPress={() => setSelectedSavedPlaceId(null)}
-            >
-              <Ionicons name="close" size={24} color="#374151" />
-            </TouchableOpacity>
-            {selectedSavedPlaceId === '__home__' ? (
-              <>
-                <View style={styles.savedPlacePopupHeader}>
-                  <View style={[styles.savedPlacePopupIcon, { backgroundColor: '#2563EB' }]}>
-                    <Ionicons name="home" size={16} color="#fff" />
-                  </View>
-                  <Text style={styles.popupTitle}>Home</Text>
-                </View>
-                <View style={styles.popupDivider} />
-                <Text style={styles.popupDetail}>📍 {homeAddress}</Text>
-                {homeCoords && (
-                  <Text style={styles.popupDetail}>
-                    🧭 {homeCoords.latitude.toFixed(5)}, {homeCoords.longitude.toFixed(5)}
-                  </Text>
-                )}
-              </>
-            ) : (() => {
-              const place = savedPlaces.find(p => p.id === selectedSavedPlaceId);
-              if (!place) return null;
-              return (
-                <>
-                  <View style={styles.savedPlacePopupHeader}>
-                    <View style={[styles.savedPlacePopupIcon, { backgroundColor: '#7C3AED' }]}>
-                      <Ionicons name="bookmark" size={16} color="#fff" />
-                    </View>
-                    <Text style={styles.popupTitle}>{place.nickname}</Text>
-                  </View>
-                  <View style={styles.popupDivider} />
-                  <Text style={styles.popupDetail}>📍 {place.address}</Text>
-                  {place.coords && (
-                    <Text style={styles.popupDetail}>
-                      🧭 {place.coords.latitude.toFixed(5)}, {place.coords.longitude.toFixed(5)}
-                    </Text>
-                  )}
-                </>
-              );
-            })()}
-          </View>
-        )}
-
         {/* ── Report fire modal ─────────────────────────────────────────────── */}
         <Modal
           visible={reportModalVisible}
@@ -1877,6 +1858,7 @@ export default function MapLibre() {
         onSelectPlace={handleSelectPlaceFromSheet}
         onClose={() => setSheetOpen(false)}
         onOpen={() => setSheetOpen(true)}
+        topInset={filterBarBottom}
       />
 
       {/* ── Search bottom sheet ────────────────────────────────────────────── */}
@@ -1886,7 +1868,8 @@ export default function MapLibre() {
         suggestions={searchSuggestions}
         loading={searchLoading}
         savedLocations={savedMapLocations}
-        selectedSavedPlaceId={selectedSavedPlaceId}
+        selectedSavedPlaceId={searchSelectedChipId}
+        currentLocation={userCoords}
         onSelectSavedPlace={handleSelectSavedPlaceFromSearch}
         onSelectSuggestion={handleSelectSuggestion}
         onClose={handleSearchClose}
@@ -2340,4 +2323,35 @@ const styles = StyleSheet.create({
     elevation: 5,
   },
   savedLocationMapMarkerSelected: { backgroundColor: '#5B21B6' },
+
+  // ── Search result pin ──────────────────────────────────────────────────────
+  searchPinAnnotation: {
+    alignItems: 'center',
+  },
+  searchPinCircle: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#F58500',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2.5,
+    borderColor: '#FFFFFF',
+    shadowColor: '#000',
+    shadowOpacity: 0.25,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 3 },
+    elevation: 8,
+  },
+  searchPinTail: {
+    width: 0,
+    height: 0,
+    borderLeftWidth: 7,
+    borderRightWidth: 7,
+    borderTopWidth: 10,
+    borderLeftColor: 'transparent',
+    borderRightColor: 'transparent',
+    borderTopColor: '#F58500',
+    marginTop: -1,
+  },
 });
