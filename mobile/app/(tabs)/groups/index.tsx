@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import {
   View,
   Text,
@@ -11,15 +11,16 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { Ionicons } from '@expo/vector-icons';
-import { router } from 'expo-router';
-import { collection, query, where, onSnapshot, orderBy } from 'firebase/firestore';
-import { onAuthStateChanged } from 'firebase/auth';
-import { db, auth } from '@/lib/firebaseConfig';
+import { router, useFocusEffect } from 'expo-router';
+import { auth } from '@/lib/firebaseConfig';
+import { fetchChats } from '@/lib/services/messageApi';
 
-function formatMessageTime(timestamp: any) {
-  if (!timestamp?.toDate) return '';
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
-  const date = timestamp.toDate();
+function formatMessageTime(isoString: string | null): string {
+  if (!isoString) return '';
+
+  const date = new Date(isoString);
   const now = new Date();
   const diffMs = now.getTime() - date.getTime();
 
@@ -33,87 +34,70 @@ function formatMessageTime(timestamp: any) {
   return `${days} day${days === 1 ? '' : 's'} ago`;
 }
 
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+type Chat = {
+  id: string;
+  participants: string[];
+  participantDetails: Record<string, any>;
+  lastMessage: string | null;
+  lastMessageAt: string | null;
+  lastMessageSenderId: string | null;
+  unreadCounts: Record<string, number>;
+  createdAt: string;
+};
+
+// ─── Screen ───────────────────────────────────────────────────────────────────
+
 export default function GroupsScreen() {
   const insets = useSafeAreaInsets();
-  const [chats, setChats] = useState<any[]>([]);
-  const [authReady, setAuthReady] = useState(false);
+  const [chats, setChats] = useState<Chat[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    let unsubscribeChats: (() => void) | undefined;
+  // Reload on every focus — covers returning from chat screen where
+  // unread counts should now be reset, and new messages arriving
+  useFocusEffect(
+    useCallback(() => {
+      let cancelled = false;
 
-    const unsubscribeAuth = onAuthStateChanged(auth, (user) => {
-      if (unsubscribeChats) {
-        unsubscribeChats();
-        unsubscribeChats = undefined;
-      }
-
-      if (!user) {
-        setChats([]);
-        setAuthReady(true);
-        return;
-      }
-
-      const q = query(
-        collection(db, 'chats'),
-        where('participants', 'array-contains', user.uid),
-        orderBy('lastMessageAt', 'desc')
-      );
-
-      unsubscribeChats = onSnapshot(
-        q,
-        (snapshot) => {
-          const chatList = snapshot.docs.map((doc) => ({
-            id: doc.id,
-            ...doc.data(),
-          }));
-
-          setChats(chatList);
-          setAuthReady(true);
-        },
-        (error) => {
-          console.log('Error loading chats:', error);
-          setAuthReady(true);
+      const load = async () => {
+        try {
+          const data = await fetchChats(); // GET /api/v1/chats
+          if (!cancelled) setChats(data);
+        } catch (err) {
+          console.log('Failed to load chats:', err);
+        } finally {
+          if (!cancelled) setLoading(false);
         }
-      );
-    });
+      };
 
-    return () => {
-      unsubscribeAuth();
-      if (unsubscribeChats) unsubscribeChats();
-    };
-  }, []);
+      load();
+      return () => { cancelled = true; };
+    }, [])
+  );
 
   const currentUid = auth.currentUser?.uid;
 
   const totalUnreadCount = chats.reduce((sum, chat) => {
-    const count = chat?.unreadCounts?.[currentUid || ''] || 0;
-    return sum + count;
+    return sum + (chat?.unreadCounts?.[currentUid || ''] || 0);
   }, 0);
 
-  const renderMessage = ({ item }: any) => {
+  const renderChat = ({ item }: { item: Chat }) => {
     const participantDetails = item.participantDetails || {};
     const entries = Object.entries(participantDetails) as [string, any][];
 
-    let displayUser: any = null;
-
-    const otherUserEntry = entries.find(([uid]) => uid !== currentUid);
-
-    if (otherUserEntry) {
-      displayUser = otherUserEntry[1];
-    } else {
-      displayUser = participantDetails[currentUid || ''];
-    }
+    // Find the other participant; fall back to self for self-chats
+    const otherEntry = entries.find(([uid]) => uid !== currentUid);
+    const displayUser = otherEntry ? otherEntry[1] : participantDetails[currentUid || ''];
 
     const displayName = displayUser
       ? `${displayUser.firstName || ''} ${displayUser.lastName || ''}`.trim()
       : 'Unknown User';
 
     const displayPhoto = displayUser?.photoURL || '';
+    const previewText = item.lastMessage?.trim() || 'Start a conversation';
 
-    const previewText = item.lastMessage?.trim()
-      ? item.lastMessage
-      : 'Start a conversation';
-
+    // lastMessageAt is an ISO string from the backend (not a Firestore timestamp)
     const timeText = formatMessageTime(item.lastMessageAt);
     const unreadCount = item?.unreadCounts?.[currentUid || ''] || 0;
     const hasUnread = unreadCount > 0;
@@ -124,10 +108,7 @@ export default function GroupsScreen() {
         onPress={() =>
           router.push({
             pathname: '/(tabs)/groups/chat',
-            params: {
-              chatId: item.id,
-              name: displayName,
-            },
+            params: { chatId: item.id, name: displayName },
           })
         }
       >
@@ -139,20 +120,15 @@ export default function GroupsScreen() {
               <Ionicons name="person" size={24} color="#888" />
             </View>
           )}
-
-          {hasUnread ? <View style={styles.unreadDot} /> : null}
+          {hasUnread && <View style={styles.unreadDot} />}
         </View>
 
         <View style={styles.messageContent}>
           <Text style={styles.messageName} numberOfLines={1}>
             {displayName}
           </Text>
-
           <Text
-            style={[
-              styles.messagePreview,
-              hasUnread && styles.messagePreviewUnread,
-            ]}
+            style={[styles.messagePreview, hasUnread && styles.messagePreviewUnread]}
             numberOfLines={1}
           >
             {previewText}
@@ -161,22 +137,20 @@ export default function GroupsScreen() {
 
         <View style={styles.rightSide}>
           <Text style={styles.messageTime}>{timeText}</Text>
-
-          {hasUnread ? (
+          {hasUnread && (
             <View style={styles.unreadBadge}>
               <Text style={styles.unreadBadgeText}>
                 {unreadCount > 99 ? '99+' : unreadCount}
               </Text>
             </View>
-          ) : null}
+          )}
         </View>
       </TouchableOpacity>
     );
   };
 
-  const renderEmptyState = () => {
-    if (!authReady) return null;
-
+  const renderEmpty = () => {
+    if (loading) return null;
     return (
       <View style={styles.emptyState}>
         <Ionicons name="chatbubbles-outline" size={54} color="#C9C9C9" />
@@ -194,7 +168,7 @@ export default function GroupsScreen() {
         <FlatList
           data={chats}
           keyExtractor={(item) => item.id}
-          renderItem={renderMessage}
+          renderItem={renderChat}
           showsVerticalScrollIndicator={false}
           contentContainerStyle={[
             styles.listContent,
@@ -227,9 +201,9 @@ export default function GroupsScreen() {
                 <Text style={styles.subtitle}>
                   {chats.length > 0
                     ? `You have ${totalUnreadCount} unread message${totalUnreadCount === 1 ? '' : 's'}`
-                    : authReady
-                    ? 'No conversations yet'
-                    : 'Loading conversations...'}
+                    : loading
+                    ? 'Loading conversations...'
+                    : 'No conversations yet'}
                 </Text>
               </View>
 
@@ -238,7 +212,6 @@ export default function GroupsScreen() {
                 onPress={() => router.push('/(tabs)/groups/emergency')}
               >
                 <View style={styles.groupAccent} />
-
                 <View style={styles.groupInner}>
                   <Ionicons
                     name="people-outline"
@@ -246,46 +219,32 @@ export default function GroupsScreen() {
                     color="#F58500"
                     style={{ marginRight: 10 }}
                   />
-
                   <Text style={styles.groupText}>View Emergency Group</Text>
-
                   <Ionicons name="chevron-forward" size={22} color="#111" />
                 </View>
               </TouchableOpacity>
             </>
           }
-          ListEmptyComponent={renderEmptyState}
+          ListEmptyComponent={renderEmpty}
         />
       </SafeAreaView>
     </>
   );
 }
 
+// ─── Styles ───────────────────────────────────────────────────────────────────
+
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#F3F3F3',
-  },
-
-  listContent: {
-    paddingBottom: 24,
-  },
-
-  listContentEmpty: {
-    flexGrow: 1,
-  },
+  container: { flex: 1, backgroundColor: '#F3F3F3' },
+  listContent: { paddingBottom: 24 },
+  listContentEmpty: { flexGrow: 1 },
 
   header: {
     backgroundColor: '#F58500',
     paddingHorizontal: 16,
     paddingBottom: 20,
   },
-
-  searchRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-
+  searchRow: { flexDirection: 'row', alignItems: 'center' },
   searchBar: {
     flex: 1,
     height: 42,
@@ -295,13 +254,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: 12,
   },
-
-  searchInput: {
-    flex: 1,
-    marginLeft: 6,
-    fontSize: 14,
-  },
-
+  searchInput: { flex: 1, marginLeft: 6, fontSize: 14 },
   composeButton: {
     width: 40,
     height: 40,
@@ -319,43 +272,18 @@ const styles = StyleSheet.create({
     paddingTop: 18,
     paddingBottom: 14,
   },
+  title: { fontSize: 26, fontWeight: '800', color: '#F58500' },
+  subtitle: { fontSize: 14, color: '#666', marginTop: 4 },
 
-  title: {
-    fontSize: 26,
-    fontWeight: '800',
-    color: '#F58500',
-  },
-
-  subtitle: {
-    fontSize: 14,
-    color: '#666',
-    marginTop: 4,
-  },
-
-  groupCard: {
-    flexDirection: 'row',
-    backgroundColor: '#F5DFC2',
-    minHeight: 88,
-  },
-
-  groupAccent: {
-    width: 4,
-    backgroundColor: '#F58500',
-  },
-
+  groupCard: { flexDirection: 'row', backgroundColor: '#F5DFC2', minHeight: 88 },
+  groupAccent: { width: 4, backgroundColor: '#F58500' },
   groupInner: {
     flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 14,
   },
-
-  groupText: {
-    flex: 1,
-    fontSize: 17,
-    fontWeight: '700',
-    color: '#111',
-  },
+  groupText: { flex: 1, fontSize: 17, fontWeight: '700', color: '#111' },
 
   messageRow: {
     flexDirection: 'row',
@@ -364,12 +292,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 14,
   },
-
-  avatarWrap: {
-    marginRight: 12,
-    position: 'relative',
-  },
-
+  avatarWrap: { marginRight: 12, position: 'relative' },
   avatar: {
     width: 56,
     height: 56,
@@ -379,7 +302,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     overflow: 'hidden',
   },
-
   unreadDot: {
     position: 'absolute',
     top: 2,
@@ -391,42 +313,12 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     borderColor: '#F3F3F3',
   },
-
-  messageContent: {
-    flex: 1,
-    justifyContent: 'center',
-    marginRight: 10,
-  },
-
-  messageName: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#111',
-    marginBottom: 4,
-  },
-
-  messagePreview: {
-    fontSize: 14,
-    color: '#666',
-  },
-
-  messagePreviewUnread: {
-    color: '#111',
-    fontWeight: '600',
-  },
-
-  rightSide: {
-    alignItems: 'flex-end',
-    justifyContent: 'flex-start',
-    minWidth: 70,
-  },
-
-  messageTime: {
-    fontSize: 13,
-    color: '#666',
-    marginTop: 4,
-  },
-
+  messageContent: { flex: 1, justifyContent: 'center', marginRight: 10 },
+  messageName: { fontSize: 16, fontWeight: '700', color: '#111', marginBottom: 4 },
+  messagePreview: { fontSize: 14, color: '#666' },
+  messagePreviewUnread: { color: '#111', fontWeight: '600' },
+  rightSide: { alignItems: 'flex-end', justifyContent: 'flex-start', minWidth: 70 },
+  messageTime: { fontSize: 13, color: '#666', marginTop: 4 },
   unreadBadge: {
     minWidth: 20,
     height: 20,
@@ -437,12 +329,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 6,
     marginTop: 8,
   },
-
-  unreadBadgeText: {
-    color: '#fff',
-    fontSize: 11,
-    fontWeight: '700',
-  },
+  unreadBadgeText: { color: '#fff', fontSize: 11, fontWeight: '700' },
 
   emptyState: {
     flex: 1,
@@ -450,18 +337,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingBottom: 80,
   },
-
-  emptyTitle: {
-    fontSize: 16,
-    fontWeight: '800',
-    color: '#111',
-    marginTop: 14,
-  },
-
-  emptySubtitle: {
-    fontSize: 14,
-    color: '#8A8A8A',
-    marginTop: 6,
-    textAlign: 'center',
-  },
+  emptyTitle: { fontSize: 16, fontWeight: '800', color: '#111', marginTop: 14 },
+  emptySubtitle: { fontSize: 14, color: '#8A8A8A', marginTop: 6, textAlign: 'center' },
 });

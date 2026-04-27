@@ -8,6 +8,10 @@
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
     "newArchEnabled": true,
+    
+    "experiments": {
+      "reactStrictMode": false
+    },
 
     "extra": {
       "router": {},

@@ -208,7 +208,7 @@ export default function ChatScreen() {
           <FlatList
             ref={flatListRef}
             data={messages}
-            keyExtractor={(item) => item.id}
+            keyExtractor={(item) => item.id ?? `${item.senderId}-${item.createdAt}`}
             renderItem={renderMessage}
             contentContainerStyle={styles.messagesList}
             showsVerticalScrollIndicator={false}

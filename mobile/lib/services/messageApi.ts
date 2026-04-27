@@ -103,6 +103,9 @@ export const connectWebSocket = async (
   ws.onmessage = (event) => {
     try {
       const message = JSON.parse(event.data);
+      if (!message.id) {
+        message.id = `ws-${message.senderId}-${message.createdAt}`;
+      }
       onMessage(message);
     } catch (err) {
       console.log('Failed to parse WebSocket message:', err);
