@@ -190,8 +190,8 @@ export default function GroupsScreen() {
           {displayPhoto ? (
             <Image source={{ uri: displayPhoto }} style={styles.avatar} />
           ) : (
-            <View style={styles.avatar}>
-              <Ionicons name="person" size={24} color="#888" />
+            <View style={styles.avatarFallback}>
+              <Ionicons name="person" size={28} color="#8A8A8A" />
             </View>
           )}
           {hasUnread && <View style={styles.unreadDot} />}
@@ -211,165 +211,229 @@ export default function GroupsScreen() {
 
         <View style={styles.rightSide}>
           <Text style={styles.messageTime}>{timeText}</Text>
-          {hasUnread && (
-            <View style={styles.badge}>
-              <Text style={styles.badgeText}>{unreadCount}</Text>
+          {hasUnread ? (
+            <View style={styles.unreadBadge}>
+              <Text style={styles.unreadBadgeText}>
+                {unreadCount > 99 ? '99+' : unreadCount}
+              </Text>
             </View>
-          )}
+          ) : null}
         </View>
       </TouchableOpacity>
     );
   };
 
   return (
-    <SafeAreaView style={styles.safe} edges={['top', 'left', 'right']}>
-      <StatusBar style="dark" />
-      <View style={[styles.container, { paddingTop: insets.top + 6 }]}>
-        <View style={styles.header}>
-          <Text style={styles.title}>Messages</Text>
-          <TouchableOpacity
-            style={styles.composeButton}
-            onPress={() => router.push('/(tabs)/groups/newmessage')}
-          >
-            <Ionicons name="create-outline" size={22} color="#111" />
-          </TouchableOpacity>
-        </View>
+    <>
+      <StatusBar style="light" backgroundColor="#F58500" />
 
-        <View style={styles.searchWrap}>
-          <Ionicons name="search" size={18} color="#777" style={styles.searchIcon} />
-          <TextInput
-            style={styles.searchInput}
-            placeholder="Search messages"
-            placeholderTextColor="#9AA0A6"
-            value={searchText}
-            onChangeText={setSearchText}
-          />
-        </View>
-
-        <View style={styles.summaryRow}>
-          <Text style={styles.summaryText}>
-            {totalUnreadCount > 0
-              ? `${totalUnreadCount} unread message${totalUnreadCount === 1 ? '' : 's'}`
-              : 'No unread messages'}
-          </Text>
-        </View>
-
+      <SafeAreaView style={styles.container} edges={['bottom']}>
         <FlatList
           data={filteredChats}
           keyExtractor={(item) => item.id}
           renderItem={renderChat}
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
-          contentContainerStyle={
-            filteredChats.length === 0 ? styles.emptyListContent : undefined
+          contentContainerStyle={[
+            styles.listContent,
+            filteredChats.length === 0 && styles.listContentEmpty,
+          ]}
+          ListHeaderComponent={
+            <>
+              <View style={[styles.header, { paddingTop: insets.top + 10 }]}>
+                <View style={styles.searchRow}>
+                  <View style={styles.searchBar}>
+                    <Ionicons name="search" size={18} color="#555" />
+                    <TextInput
+                      placeholder="Search"
+                      placeholderTextColor="#555"
+                      style={styles.searchInput}
+                      value={searchText}
+                      onChangeText={setSearchText}
+                    />
+                  </View>
+
+                  <TouchableOpacity
+                    style={styles.composeButton}
+                    onPress={() => router.push('/(tabs)/groups/newmessage')}
+                  >
+                    <Ionicons name="create-outline" size={22} color="#fff" />
+                  </TouchableOpacity>
+                </View>
+              </View>
+
+              <View style={styles.titleSection}>
+                <Text style={styles.title}>Messages</Text>
+                <Text style={styles.subtitle}>
+                  {loading
+                    ? 'Loading conversations...'
+                    : `You have ${totalUnreadCount} unread message${totalUnreadCount === 1 ? '' : 's'}`}
+                </Text>
+              </View>
+
+              <TouchableOpacity
+                style={styles.groupCard}
+                onPress={() => router.push('/(tabs)/groups/emergency')}
+              >
+                <View style={styles.groupAccent} />
+
+                <View style={styles.groupInner}>
+                  <Ionicons
+                    name="people-outline"
+                    size={22}
+                    color="#F58500"
+                    style={styles.groupIcon}
+                  />
+
+                  <Text style={styles.groupText}>View Emergency Group</Text>
+
+                  <Ionicons name="chevron-forward" size={22} color="#111" />
+                </View>
+              </TouchableOpacity>
+            </>
           }
           ListEmptyComponent={
             <View style={styles.emptyState}>
-              <Ionicons name="chatbubble-ellipses-outline" size={34} color="#999" />
+              <Ionicons name="chatbubbles-outline" size={54} color="#C9C9C9" />
               <Text style={styles.emptyTitle}>
-                {loading ? 'Loading conversations...' : 'No conversations yet'}
+                {loading ? 'Loading conversations...' : 'No messages found'}
               </Text>
               <Text style={styles.emptySubtitle}>
-                Start a new chat to see messages here.
+                {searchText.trim()
+                  ? 'Try a different search term.'
+                  : 'Start a conversation to see messages here.'}
               </Text>
             </View>
           }
         />
-      </View>
-    </SafeAreaView>
+      </SafeAreaView>
+    </>
   );
 }
 
 const styles = StyleSheet.create({
-  safe: {
-    flex: 1,
-    backgroundColor: '#fff',
-  },
   container: {
     flex: 1,
-    paddingHorizontal: 16,
-    backgroundColor: '#fff',
+    backgroundColor: '#F3F3F3',
+  },
+  listContent: {
+    paddingBottom: 24,
+  },
+  listContentEmpty: {
+    flexGrow: 1,
   },
   header: {
-    height: 52,
+    backgroundColor: '#F58500',
+    paddingHorizontal: 16,
+    paddingBottom: 20,
+  },
+  searchRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 10,
   },
-  title: {
-    fontSize: 28,
-    fontWeight: '800',
-    color: '#111',
-  },
-  composeButton: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#F3F4F6',
-  },
-  searchWrap: {
-    height: 44,
-    borderRadius: 12,
-    backgroundColor: '#F5F6F7',
+  searchBar: {
+    flex: 1,
+    height: 42,
+    borderRadius: 24,
+    backgroundColor: '#FFF4E8',
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 12,
-    marginBottom: 10,
-  },
-  searchIcon: {
-    marginRight: 8,
   },
   searchInput: {
     flex: 1,
-    fontSize: 15,
+    marginLeft: 6,
+    fontSize: 14,
     color: '#111',
   },
-  summaryRow: {
-    marginBottom: 8,
+  composeButton: {
+    width: 40,
+    height: 40,
+    marginLeft: 10,
+    borderWidth: 2,
+    borderColor: '#fff',
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  summaryText: {
-    fontSize: 13,
-    color: '#6B7280',
-    fontWeight: '600',
+  titleSection: {
+    backgroundColor: '#F3F3F3',
+    paddingHorizontal: 16,
+    paddingTop: 18,
+    paddingBottom: 14,
+  },
+  title: {
+    fontSize: 26,
+    fontWeight: '800',
+    color: '#F58500',
+  },
+  subtitle: {
+    fontSize: 14,
+    color: '#666',
+    marginTop: 4,
+  },
+  groupCard: {
+    flexDirection: 'row',
+    backgroundColor: '#F5DFC2',
+    minHeight: 88,
+  },
+  groupAccent: {
+    width: 4,
+    backgroundColor: '#F58500',
+  },
+  groupInner: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 14,
+  },
+  groupIcon: {
+    marginRight: 10,
+  },
+  groupText: {
+    flex: 1,
+    fontSize: 17,
+    fontWeight: '700',
+    color: '#111',
   },
   messageRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: '#F3F4F6',
+    backgroundColor: '#F3F3F3',
+    paddingHorizontal: 14,
+    paddingVertical: 14,
   },
   avatarWrap: {
-    width: 56,
-    height: 56,
     marginRight: 12,
-    justifyContent: 'center',
-    alignItems: 'center',
+    position: 'relative',
   },
   avatar: {
-    width: 52,
-    height: 52,
-    borderRadius: 26,
-    backgroundColor: '#F1F3F4',
-    justifyContent: 'center',
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+  },
+  avatarFallback: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: '#D8D8D8',
     alignItems: 'center',
+    justifyContent: 'center',
   },
   unreadDot: {
     position: 'absolute',
-    top: 6,
-    right: 3,
+    top: 2,
+    right: 2,
     width: 12,
     height: 12,
     borderRadius: 6,
-    backgroundColor: '#1677FF',
+    backgroundColor: '#F58500',
     borderWidth: 2,
-    borderColor: '#fff',
+    borderColor: '#F3F3F3',
   },
   messageContent: {
     flex: 1,
+    justifyContent: 'center',
     marginRight: 10,
   },
   messageName: {
@@ -380,7 +444,7 @@ const styles = StyleSheet.create({
   },
   messagePreview: {
     fontSize: 14,
-    color: '#777',
+    color: '#666',
   },
   messagePreviewUnread: {
     color: '#111',
@@ -388,45 +452,46 @@ const styles = StyleSheet.create({
   },
   rightSide: {
     alignItems: 'flex-end',
-    minWidth: 68,
+    justifyContent: 'flex-start',
+    minWidth: 70,
   },
   messageTime: {
-    fontSize: 12,
-    color: '#888',
-    marginBottom: 6,
+    fontSize: 13,
+    color: '#666',
+    marginTop: 4,
   },
-  badge: {
-    minWidth: 22,
-    height: 22,
-    borderRadius: 11,
-    paddingHorizontal: 6,
-    backgroundColor: '#1677FF',
+  unreadBadge: {
+    minWidth: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: '#F58500',
     alignItems: 'center',
     justifyContent: 'center',
+    paddingHorizontal: 6,
+    marginTop: 8,
   },
-  badgeText: {
+  unreadBadgeText: {
     color: '#fff',
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '700',
   },
-  emptyListContent: {
-    flexGrow: 1,
-    justifyContent: 'center',
-  },
   emptyState: {
+    flex: 1,
     alignItems: 'center',
+    justifyContent: 'center',
+    paddingBottom: 80,
     paddingHorizontal: 24,
   },
   emptyTitle: {
-    marginTop: 12,
-    fontSize: 18,
-    fontWeight: '700',
+    fontSize: 16,
+    fontWeight: '800',
     color: '#111',
+    marginTop: 14,
   },
   emptySubtitle: {
-    marginTop: 6,
     fontSize: 14,
-    color: '#777',
+    color: '#8A8A8A',
+    marginTop: 6,
     textAlign: 'center',
   },
 });
