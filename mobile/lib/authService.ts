@@ -7,6 +7,7 @@ import {
 } from 'firebase/auth';
 import { doc, setDoc, getDoc, updateDoc, query, where, getDocs, collection, serverTimestamp } from 'firebase/firestore';
 import { auth, db } from './firebaseConfig';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 interface UserProfile {
   username: string;
@@ -45,19 +46,31 @@ export const signUp = async (
   return result;
 };
 
-export const signIn = (email: string, password: string): Promise<UserCredential> =>
-  signInWithEmailAndPassword(auth, email, password);
+//export const signIn = (email: string, password: string): Promise<UserCredential> =>
+  //signInWithEmailAndPassword(auth, email, password);
+
+export const signIn = async (email: string, password: string) => {
+  const userCredential = await signInWithEmailAndPassword(auth, email, password);
+  
+  if (userCredential.user) {
+    await AsyncStorage.setItem('user_logged_in', 'true');
+    const check = await AsyncStorage.getItem('user_logged_in');
+    console.log("Verify flag is in storage:", check);
+  }
+  return userCredential;
+};
 
 export const resetPassword = (email: string): Promise<void> =>
   sendPasswordResetEmail(auth, email);
 
 //export const logOut = (): Promise<void> => signOut(auth);
-export const logOut = async (): Promise<void> => {
+
+export const logOut = async () => {
   try {
     await signOut(auth);
+    await AsyncStorage.removeItem('user_logged_in'); 
   } catch (error) {
-    console.error("Error during logout:", error);
-    throw error;
+    console.error("Logout error", error);
   }
 };
 
