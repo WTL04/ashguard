@@ -4,13 +4,38 @@ import {
   Text,
   StyleSheet,
   Pressable,
+  Alert
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
+import { logOut } from "@/lib/authService";
+
 
 export default function SettingsScreen() {
   const router = useRouter();
+
+const handleLogout = () => {
+  Alert.alert(
+    "Log Out",
+    "Are you sure that you want to log out at this moment?",
+    [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Log Out", style: "default",
+        
+        onPress: async () => { 
+          try {
+            await logOut(); 
+            router.replace("/(auth)/login");
+          } catch (error) {
+            console.error(error);
+          }
+        },
+      },
+    ]
+  );
+};
 
   return (
     <SafeAreaView style={styles.container} edges={["top"]}>
@@ -102,7 +127,7 @@ export default function SettingsScreen() {
 
       {/* Logout */}
       <View style={[styles.card, { marginTop: 18 }]}>
-        <Pressable style={styles.row}>
+        <Pressable style={styles.row} onPress={handleLogout}>
           <View style={styles.rowLeft}>
             <Ionicons
               name="log-out-outline"

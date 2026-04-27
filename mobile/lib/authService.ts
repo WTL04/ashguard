@@ -51,7 +51,15 @@ export const signIn = (email: string, password: string): Promise<UserCredential>
 export const resetPassword = (email: string): Promise<void> =>
   sendPasswordResetEmail(auth, email);
 
-export const logOut = (): Promise<void> => signOut(auth);
+//export const logOut = (): Promise<void> => signOut(auth);
+export const logOut = async (): Promise<void> => {
+  try {
+    await signOut(auth);
+  } catch (error) {
+    console.error("Error during logout:", error);
+    throw error;
+  }
+};
 
 export const isFieldTaken = async (fieldName: string, value: string, currentUid: string) => {
   const usersRef = collection(db, "users");
