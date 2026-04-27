@@ -191,3 +191,33 @@ async def get_messages(
         )
 
     return {"chat_id": chat_id, "messages": messages}
+
+
+@router.post("/chats/{chat_id}/read")
+async def mark_chat_as_read(
+    chat_id: str,
+    sender_uid: str = Depends(verify_token),
+    db=Depends(get_db),
+):
+    chat_ref = db.collection("chats").document(chat_id)
+    chat_snap = await chat_ref.get()
+
+    if not chat_snap.exists:
+        raise HTTPException(status_code=404, detail="Chat not found")
+
+    chat_data = chat_snap.to_dict()
+    participants = chat_data.get("participants", [])
+
+    if sender_uid not in participants:
+        raise HTTPException(status_code=403, detail="Not a participant of this chat")
+
+    unread_counts = chat_data.get("unreadCounts", {})
+    unread_counts[sender_uid] = 0
+
+    await chat_ref.update({"unreadCounts": unread_counts})
+
+    return {
+        "status": "read",
+        "chat_id": chat_id,
+        "unreadCounts": unread_counts,
+    }

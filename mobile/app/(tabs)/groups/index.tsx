@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -13,9 +13,7 @@ import { StatusBar } from 'expo-status-bar';
 import { Ionicons } from '@expo/vector-icons';
 import { router, useFocusEffect } from 'expo-router';
 import { auth } from '@/lib/firebaseConfig';
-import { fetchChats } from '@/lib/services/messageApi';
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+import { fetchChats, connectWebSocket } from '@/lib/services/messageApi';
 
 function formatMessageTime(isoString: string | null): string {
   if (!isoString) return '';
@@ -34,8 +32,6 @@ function formatMessageTime(isoString: string | null): string {
   return `${days} day${days === 1 ? '' : 's'} ago`;
 }
 
-// ─── Types ────────────────────────────────────────────────────────────────────
-
 type Chat = {
   id: string;
   participants: string[];
@@ -47,36 +43,104 @@ type Chat = {
   createdAt: string;
 };
 
-// ─── Screen ───────────────────────────────────────────────────────────────────
-
 export default function GroupsScreen() {
   const insets = useSafeAreaInsets();
   const [chats, setChats] = useState<Chat[]>([]);
   const [loading, setLoading] = useState(true);
+  const [searchText, setSearchText] = useState('');
+  const wsRefs = useRef<WebSocket[]>([]);
+  const currentUid = auth.currentUser?.uid ?? null;
 
-  // Reload on every focus — covers returning from chat screen where
-  // unread counts should now be reset, and new messages arriving
+  const loadChats = useCallback(async () => {
+    try {
+      const data = await fetchChats();
+      setChats(data);
+    } catch (err) {
+      console.log('Failed to load chats:', err);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
   useFocusEffect(
     useCallback(() => {
       let cancelled = false;
 
-      const load = async () => {
+      const run = async () => {
         try {
-          const data = await fetchChats(); // GET /api/v1/chats
-          if (!cancelled) setChats(data);
+          const data = await fetchChats();
+          if (!cancelled) {
+            setChats(data);
+            setLoading(false);
+          }
         } catch (err) {
           console.log('Failed to load chats:', err);
-        } finally {
           if (!cancelled) setLoading(false);
         }
       };
 
-      load();
-      return () => { cancelled = true; };
+      run();
+
+      return () => {
+        cancelled = true;
+      };
     }, [])
   );
 
-  const currentUid = auth.currentUser?.uid;
+  useEffect(() => {
+    let active = true;
+
+    const setupSockets = async () => {
+      try {
+        const data = await fetchChats();
+        if (!active) return;
+
+        setChats(data);
+        setLoading(false);
+
+        wsRefs.current.forEach((ws) => ws.close());
+        wsRefs.current = [];
+
+        for (const chat of data) {
+          const ws = await connectWebSocket(chat.id, async () => {
+            if (!active) return;
+            await loadChats();
+          });
+
+          if (!active) {
+            ws.close();
+            continue;
+          }
+
+          wsRefs.current.push(ws);
+        }
+      } catch (err) {
+        console.log('Failed to setup inbox sockets:', err);
+        if (active) setLoading(false);
+      }
+    };
+
+    setupSockets();
+
+    return () => {
+      active = false;
+      wsRefs.current.forEach((ws) => ws.close());
+      wsRefs.current = [];
+    };
+  }, [loadChats]);
+
+  const filteredChats = chats.filter((chat) => {
+    const participantDetails = chat.participantDetails || {};
+    const entries = Object.entries(participantDetails) as [string, any][];
+    const otherEntry = entries.find(([uid]) => uid !== currentUid);
+    const displayUser = otherEntry ? otherEntry[1] : participantDetails[currentUid || ''];
+
+    const displayName = displayUser
+      ? `${displayUser.firstName || ''} ${displayUser.lastName || ''}`.trim()
+      : 'Unknown User';
+
+    return displayName.toLowerCase().includes(searchText.toLowerCase());
+  });
 
   const totalUnreadCount = chats.reduce((sum, chat) => {
     return sum + (chat?.unreadCounts?.[currentUid || ''] || 0);
@@ -85,8 +149,6 @@ export default function GroupsScreen() {
   const renderChat = ({ item }: { item: Chat }) => {
     const participantDetails = item.participantDetails || {};
     const entries = Object.entries(participantDetails) as [string, any][];
-
-    // Find the other participant; fall back to self for self-chats
     const otherEntry = entries.find(([uid]) => uid !== currentUid);
     const displayUser = otherEntry ? otherEntry[1] : participantDetails[currentUid || ''];
 
@@ -96,8 +158,6 @@ export default function GroupsScreen() {
 
     const displayPhoto = displayUser?.photoURL || '';
     const previewText = item.lastMessage?.trim() || 'Start a conversation';
-
-    // lastMessageAt is an ISO string from the backend (not a Firestore timestamp)
     const timeText = formatMessageTime(item.lastMessageAt);
     const unreadCount = item?.unreadCounts?.[currentUid || ''] || 0;
     const hasUnread = unreadCount > 0;
@@ -105,12 +165,26 @@ export default function GroupsScreen() {
     return (
       <TouchableOpacity
         style={styles.messageRow}
-        onPress={() =>
+        onPress={() => {
+          setChats((prev) =>
+            prev.map((chat) =>
+              chat.id === item.id
+                ? {
+                    ...chat,
+                    unreadCounts: {
+                      ...chat.unreadCounts,
+                      [currentUid || '']: 0,
+                    },
+                  }
+                : chat
+            )
+          );
+
           router.push({
             pathname: '/(tabs)/groups/chat',
             params: { chatId: item.id, name: displayName },
-          })
-        }
+          });
+        }}
       >
         <View style={styles.avatarWrap}>
           {displayPhoto ? (
@@ -138,10 +212,8 @@ export default function GroupsScreen() {
         <View style={styles.rightSide}>
           <Text style={styles.messageTime}>{timeText}</Text>
           {hasUnread && (
-            <View style={styles.unreadBadge}>
-              <Text style={styles.unreadBadgeText}>
-                {unreadCount > 99 ? '99+' : unreadCount}
-              </Text>
+            <View style={styles.badge}>
+              <Text style={styles.badgeText}>{unreadCount}</Text>
             </View>
           )}
         </View>
@@ -149,194 +221,212 @@ export default function GroupsScreen() {
     );
   };
 
-  const renderEmpty = () => {
-    if (loading) return null;
-    return (
-      <View style={styles.emptyState}>
-        <Ionicons name="chatbubbles-outline" size={54} color="#C9C9C9" />
-        <Text style={styles.emptyTitle}>No messages yet</Text>
-        <Text style={styles.emptySubtitle}>Start a conversation</Text>
-      </View>
-    );
-  };
-
   return (
-    <>
-      <StatusBar style="light" backgroundColor="#F58500" />
+    <SafeAreaView style={styles.safe} edges={['top', 'left', 'right']}>
+      <StatusBar style="dark" />
+      <View style={[styles.container, { paddingTop: insets.top + 6 }]}>
+        <View style={styles.header}>
+          <Text style={styles.title}>Messages</Text>
+          <TouchableOpacity
+            style={styles.composeButton}
+            onPress={() => router.push('/(tabs)/groups/newmessage')}
+          >
+            <Ionicons name="create-outline" size={22} color="#111" />
+          </TouchableOpacity>
+        </View>
 
-      <SafeAreaView style={styles.container} edges={['bottom']}>
+        <View style={styles.searchWrap}>
+          <Ionicons name="search" size={18} color="#777" style={styles.searchIcon} />
+          <TextInput
+            style={styles.searchInput}
+            placeholder="Search messages"
+            placeholderTextColor="#9AA0A6"
+            value={searchText}
+            onChangeText={setSearchText}
+          />
+        </View>
+
+        <View style={styles.summaryRow}>
+          <Text style={styles.summaryText}>
+            {totalUnreadCount > 0
+              ? `${totalUnreadCount} unread message${totalUnreadCount === 1 ? '' : 's'}`
+              : 'No unread messages'}
+          </Text>
+        </View>
+
         <FlatList
-          data={chats}
+          data={filteredChats}
           keyExtractor={(item) => item.id}
           renderItem={renderChat}
           showsVerticalScrollIndicator={false}
-          contentContainerStyle={[
-            styles.listContent,
-            chats.length === 0 && styles.listContentEmpty,
-          ]}
-          ListHeaderComponent={
-            <>
-              <View style={[styles.header, { paddingTop: insets.top + 10 }]}>
-                <View style={styles.searchRow}>
-                  <View style={styles.searchBar}>
-                    <Ionicons name="search" size={18} color="#555" />
-                    <TextInput
-                      placeholder="Search"
-                      placeholderTextColor="#555"
-                      style={styles.searchInput}
-                    />
-                  </View>
-
-                  <TouchableOpacity
-                    style={styles.composeButton}
-                    onPress={() => router.push('/(tabs)/groups/newmessage')}
-                  >
-                    <Ionicons name="create-outline" size={22} color="#fff" />
-                  </TouchableOpacity>
-                </View>
-              </View>
-
-              <View style={styles.titleSection}>
-                <Text style={styles.title}>Messages</Text>
-                <Text style={styles.subtitle}>
-                  {chats.length > 0
-                    ? `You have ${totalUnreadCount} unread message${totalUnreadCount === 1 ? '' : 's'}`
-                    : loading
-                    ? 'Loading conversations...'
-                    : 'No conversations yet'}
-                </Text>
-              </View>
-
-              <TouchableOpacity
-                style={styles.groupCard}
-                onPress={() => router.push('/(tabs)/groups/emergency')}
-              >
-                <View style={styles.groupAccent} />
-                <View style={styles.groupInner}>
-                  <Ionicons
-                    name="people-outline"
-                    size={22}
-                    color="#F58500"
-                    style={{ marginRight: 10 }}
-                  />
-                  <Text style={styles.groupText}>View Emergency Group</Text>
-                  <Ionicons name="chevron-forward" size={22} color="#111" />
-                </View>
-              </TouchableOpacity>
-            </>
+          keyboardShouldPersistTaps="handled"
+          contentContainerStyle={
+            filteredChats.length === 0 ? styles.emptyListContent : undefined
           }
-          ListEmptyComponent={renderEmpty}
+          ListEmptyComponent={
+            <View style={styles.emptyState}>
+              <Ionicons name="chatbubble-ellipses-outline" size={34} color="#999" />
+              <Text style={styles.emptyTitle}>
+                {loading ? 'Loading conversations...' : 'No conversations yet'}
+              </Text>
+              <Text style={styles.emptySubtitle}>
+                Start a new chat to see messages here.
+              </Text>
+            </View>
+          }
         />
-      </SafeAreaView>
-    </>
+      </View>
+    </SafeAreaView>
   );
 }
 
-// ─── Styles ───────────────────────────────────────────────────────────────────
-
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F3F3F3' },
-  listContent: { paddingBottom: 24 },
-  listContentEmpty: { flexGrow: 1 },
-
-  header: {
-    backgroundColor: '#F58500',
-    paddingHorizontal: 16,
-    paddingBottom: 20,
-  },
-  searchRow: { flexDirection: 'row', alignItems: 'center' },
-  searchBar: {
+  safe: {
     flex: 1,
-    height: 42,
-    borderRadius: 24,
-    backgroundColor: '#FFF4E8',
+    backgroundColor: '#fff',
+  },
+  container: {
+    flex: 1,
+    paddingHorizontal: 16,
+    backgroundColor: '#fff',
+  },
+  header: {
+    height: 52,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 10,
+  },
+  title: {
+    fontSize: 28,
+    fontWeight: '800',
+    color: '#111',
+  },
+  composeButton: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#F3F4F6',
+  },
+  searchWrap: {
+    height: 44,
+    borderRadius: 12,
+    backgroundColor: '#F5F6F7',
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 12,
+    marginBottom: 10,
   },
-  searchInput: { flex: 1, marginLeft: 6, fontSize: 14 },
-  composeButton: {
-    width: 40,
-    height: 40,
-    marginLeft: 10,
-    borderWidth: 2,
-    borderColor: '#fff',
-    borderRadius: 10,
-    alignItems: 'center',
-    justifyContent: 'center',
+  searchIcon: {
+    marginRight: 8,
   },
-
-  titleSection: {
-    backgroundColor: '#F3F3F3',
-    paddingHorizontal: 16,
-    paddingTop: 18,
-    paddingBottom: 14,
-  },
-  title: { fontSize: 26, fontWeight: '800', color: '#F58500' },
-  subtitle: { fontSize: 14, color: '#666', marginTop: 4 },
-
-  groupCard: { flexDirection: 'row', backgroundColor: '#F5DFC2', minHeight: 88 },
-  groupAccent: { width: 4, backgroundColor: '#F58500' },
-  groupInner: {
+  searchInput: {
     flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 14,
+    fontSize: 15,
+    color: '#111',
   },
-  groupText: { flex: 1, fontSize: 17, fontWeight: '700', color: '#111' },
-
+  summaryRow: {
+    marginBottom: 8,
+  },
+  summaryText: {
+    fontSize: 13,
+    color: '#6B7280',
+    fontWeight: '600',
+  },
   messageRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#F3F3F3',
-    paddingHorizontal: 14,
-    paddingVertical: 14,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F3F4F6',
   },
-  avatarWrap: { marginRight: 12, position: 'relative' },
-  avatar: {
+  avatarWrap: {
     width: 56,
     height: 56,
-    borderRadius: 28,
-    backgroundColor: '#D8D8D8',
-    alignItems: 'center',
+    marginRight: 12,
     justifyContent: 'center',
-    overflow: 'hidden',
+    alignItems: 'center',
+  },
+  avatar: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    backgroundColor: '#F1F3F4',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   unreadDot: {
     position: 'absolute',
-    top: 2,
-    right: 2,
+    top: 6,
+    right: 3,
     width: 12,
     height: 12,
     borderRadius: 6,
-    backgroundColor: '#F58500',
+    backgroundColor: '#1677FF',
     borderWidth: 2,
-    borderColor: '#F3F3F3',
+    borderColor: '#fff',
   },
-  messageContent: { flex: 1, justifyContent: 'center', marginRight: 10 },
-  messageName: { fontSize: 16, fontWeight: '700', color: '#111', marginBottom: 4 },
-  messagePreview: { fontSize: 14, color: '#666' },
-  messagePreviewUnread: { color: '#111', fontWeight: '600' },
-  rightSide: { alignItems: 'flex-end', justifyContent: 'flex-start', minWidth: 70 },
-  messageTime: { fontSize: 13, color: '#666', marginTop: 4 },
-  unreadBadge: {
-    minWidth: 20,
-    height: 20,
-    borderRadius: 10,
-    backgroundColor: '#F58500',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 6,
-    marginTop: 8,
-  },
-  unreadBadgeText: { color: '#fff', fontSize: 11, fontWeight: '700' },
-
-  emptyState: {
+  messageContent: {
     flex: 1,
+    marginRight: 10,
+  },
+  messageName: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#111',
+    marginBottom: 4,
+  },
+  messagePreview: {
+    fontSize: 14,
+    color: '#777',
+  },
+  messagePreviewUnread: {
+    color: '#111',
+    fontWeight: '600',
+  },
+  rightSide: {
+    alignItems: 'flex-end',
+    minWidth: 68,
+  },
+  messageTime: {
+    fontSize: 12,
+    color: '#888',
+    marginBottom: 6,
+  },
+  badge: {
+    minWidth: 22,
+    height: 22,
+    borderRadius: 11,
+    paddingHorizontal: 6,
+    backgroundColor: '#1677FF',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingBottom: 80,
   },
-  emptyTitle: { fontSize: 16, fontWeight: '800', color: '#111', marginTop: 14 },
-  emptySubtitle: { fontSize: 14, color: '#8A8A8A', marginTop: 6, textAlign: 'center' },
+  badgeText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  emptyListContent: {
+    flexGrow: 1,
+    justifyContent: 'center',
+  },
+  emptyState: {
+    alignItems: 'center',
+    paddingHorizontal: 24,
+  },
+  emptyTitle: {
+    marginTop: 12,
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#111',
+  },
+  emptySubtitle: {
+    marginTop: 6,
+    fontSize: 14,
+    color: '#777',
+    textAlign: 'center',
+  },
 });
