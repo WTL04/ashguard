@@ -14,18 +14,13 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { StatusBar } from 'expo-status-bar';
 import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, router } from 'expo-router';
-import {
-  collection,
-  addDoc,
-  onSnapshot,
-  query,
-  orderBy,
-  serverTimestamp,
-  updateDoc,
-  doc,
-  getDoc,
-} from 'firebase/firestore';
+import { doc, getDoc } from 'firebase/firestore';
 import { db, auth } from '@/lib/firebaseConfig';
+import {
+  fetchMessageHistory,
+  sendMessage,
+  connectWebSocket,
+} from '@/lib/services/messageApi';
 
 type Message = {
   id: string;
@@ -35,11 +30,18 @@ type Message = {
 };
 
 function formatChatTimestamp(timestamp: any) {
-  if (!timestamp?.toDate) return '';
+  if (!timestamp) return '';
 
-  const date = timestamp.toDate();
+  // Firestore timestamp (from history load)
+  if (timestamp?.toDate) {
+    return timestamp.toDate().toLocaleTimeString([], {
+      hour: 'numeric',
+      minute: '2-digit',
+    });
+  }
 
-  return date.toLocaleTimeString([], {
+  // ISO string (from WebSocket delivery)
+  return new Date(timestamp).toLocaleTimeString([], {
     hour: 'numeric',
     minute: '2-digit',
   });
@@ -53,27 +55,31 @@ export default function ChatScreen() {
   const [input, setInput] = useState('');
   const [chatPhoto, setChatPhoto] = useState('');
   const flatListRef = useRef<FlatList<Message>>(null);
+  const wsRef = useRef<WebSocket | null>(null);
 
+  // load history once and open WebSocket on chat screen mount
   useEffect(() => {
     if (!chatId) return;
 
-    const q = query(
-      collection(db, 'chats', String(chatId), 'messages'),
-      orderBy('createdAt', 'asc')
-    );
+    fetchMessageHistory(String(chatId))
+      .then((msgs) => setMessages(msgs))
+      .catch((err) => console.log('History load failed:', err));
 
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const msgs = snapshot.docs.map((doc) => ({
-        id: doc.id,
-        ...doc.data(),
-      })) as Message[];
-
-      setMessages(msgs);
+    connectWebSocket(
+      String(chatId),
+      (message) => setMessages((prev) => [...prev, message]),
+      () => console.log('WebSocket closed'),
+    ).then((ws) => {
+      wsRef.current = ws;
     });
 
-    return unsubscribe;
+    return () => {
+      wsRef.current?.close();
+      wsRef.current = null;
+    };
   }, [chatId]);
 
+  // scroll to bottom when messages update
   useEffect(() => {
     if (messages.length === 0) return;
 
@@ -84,67 +90,15 @@ export default function ChatScreen() {
     return () => clearTimeout(timer);
   }, [messages]);
 
-  // ✅ FIX: Clear unread whenever messages change while chat is open
-  useEffect(() => {
-    const clearUnreadForCurrentUser = async () => {
-      const currentUid = auth.currentUser?.uid;
-      if (!chatId || !currentUid) return;
-
-      try {
-        await updateDoc(doc(db, 'chats', String(chatId)), {
-          [`unreadCounts.${currentUid}`]: 0,
-        });
-      } catch (error) {
-        console.log('Error clearing unread count:', error);
-      }
-    };
-
-    if (messages.length > 0) {
-      clearUnreadForCurrentUser();
-    }
-  }, [chatId, messages]);
-
-  const sendMessage = async () => {
+  const handleSend = async () => {
     const trimmed = input.trim();
-    const currentUid = auth.currentUser?.uid;
-
-    if (!trimmed || !chatId || !currentUid) return;
+    if (!trimmed || !chatId) return;
 
     try {
-      const chatRef = doc(db, 'chats', String(chatId));
-      const chatSnap = await getDoc(chatRef);
-
-      if (!chatSnap.exists()) return;
-
-      const chatData = chatSnap.data();
-      const participants: string[] = chatData.participants || [];
-
-      const otherParticipantIds = participants.filter((uid) => uid !== currentUid);
-
-      const unreadCounts = { ...(chatData.unreadCounts || {}) };
-
-      otherParticipantIds.forEach((uid) => {
-        unreadCounts[uid] = (unreadCounts[uid] || 0) + 1;
-      });
-
-      unreadCounts[currentUid] = 0;
-
-      await addDoc(collection(db, 'chats', String(chatId), 'messages'), {
-        text: trimmed,
-        senderId: currentUid,
-        createdAt: serverTimestamp(),
-      });
-
-      await updateDoc(chatRef, {
-        lastMessage: trimmed,
-        lastMessageAt: serverTimestamp(),
-        lastMessageSenderId: currentUid,
-        unreadCounts,
-      });
-
+      await sendMessage(String(chatId), trimmed);
       setInput('');
-    } catch (error) {
-      console.log('Error sending message:', error);
+    } catch (err) {
+      console.log('Send failed:', err);
     }
   };
 
@@ -189,6 +143,7 @@ export default function ChatScreen() {
     );
   };
 
+  // load chat header photo -- read only, kept as direct Firestore read
   useEffect(() => {
     const loadChatHeader = async () => {
       const currentUid = auth.currentUser?.uid;
@@ -240,7 +195,7 @@ export default function ChatScreen() {
                 ) : (
                   <Ionicons name="person" size={22} color="#F58500" />
                 )}
-              </View>   
+              </View>
 
               <Text style={styles.headerTitle} numberOfLines={1}>
                 {name || 'Chat'}
@@ -272,7 +227,7 @@ export default function ChatScreen() {
                 style={styles.input}
               />
 
-              <TouchableOpacity onPress={sendMessage} style={styles.sendButton}>
+              <TouchableOpacity onPress={handleSend} style={styles.sendButton}>
                 <Ionicons name="send-outline" size={24} color="#444" />
               </TouchableOpacity>
             </View>
