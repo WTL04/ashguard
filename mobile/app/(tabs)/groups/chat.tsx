@@ -57,6 +57,15 @@ export default function ChatScreen() {
   const wsRef = useRef<WebSocket | null>(null);
   const currentUid = auth.currentUser?.uid ?? null;
 
+  const scrollToBottom = useCallback((animated = true) => {
+    requestAnimationFrame(() => {
+      flatListRef.current?.scrollToOffset({
+        offset: 0,
+        animated,
+      });
+    });
+  }, []);
+
   const syncReadState = useCallback(async () => {
     if (!chatId) return;
 
@@ -76,6 +85,7 @@ export default function ChatScreen() {
       .then(async (msgs) => {
         if (!mounted) return;
         setMessages([...msgs].reverse());
+        scrollToBottom(false);
         await syncReadState();
       })
       .catch((err) => console.log('History load failed:', err));
@@ -86,6 +96,7 @@ export default function ChatScreen() {
         if (!mounted) return;
 
         setMessages((prev) => [message, ...prev]);
+        scrollToBottom();
 
         if (message.senderId !== currentUid) {
           await syncReadState();
@@ -105,7 +116,13 @@ export default function ChatScreen() {
       wsRef.current?.close();
       wsRef.current = null;
     };
-  }, [chatId, currentUid, syncReadState]);
+  }, [chatId, currentUid, scrollToBottom, syncReadState]);
+
+  useEffect(() => {
+    if (messages.length > 0) {
+      scrollToBottom();
+    }
+  }, [messages.length, scrollToBottom]);
 
   const handleSend = async () => {
     const trimmed = input.trim();
@@ -114,6 +131,7 @@ export default function ChatScreen() {
     try {
       await sendMessage(String(chatId), trimmed);
       setInput('');
+      scrollToBottom();
     } catch (err) {
       console.log('Send failed:', err);
     }
@@ -225,9 +243,8 @@ export default function ChatScreen() {
           contentContainerStyle={styles.messagesList}
           showsVerticalScrollIndicator={false}
           inverted
-          maintainVisibleContentPosition={{
-            minIndexForVisible: 0,
-          }}
+          keyboardShouldPersistTaps="handled"
+          onContentSizeChange={() => scrollToBottom(false)}
         />
 
         <View style={[styles.inputBar, { paddingBottom: Math.max(insets.bottom, 10) }]}>
