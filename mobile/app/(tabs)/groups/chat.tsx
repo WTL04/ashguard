@@ -75,7 +75,7 @@ export default function ChatScreen() {
     fetchMessageHistory(String(chatId))
       .then(async (msgs) => {
         if (!mounted) return;
-        setMessages(msgs);
+        setMessages([...msgs].reverse());
         await syncReadState();
       })
       .catch((err) => console.log('History load failed:', err));
@@ -85,7 +85,7 @@ export default function ChatScreen() {
       async (message) => {
         if (!mounted) return;
 
-        setMessages((prev) => [...prev, message]);
+        setMessages((prev) => [message, ...prev]);
 
         if (message.senderId !== currentUid) {
           await syncReadState();
@@ -106,16 +106,6 @@ export default function ChatScreen() {
       wsRef.current = null;
     };
   }, [chatId, currentUid, syncReadState]);
-
-  useEffect(() => {
-    if (messages.length === 0) return;
-
-    const timer = setTimeout(() => {
-      flatListRef.current?.scrollToEnd({ animated: true });
-    }, 100);
-
-    return () => clearTimeout(timer);
-  }, [messages]);
 
   const handleSend = async () => {
     const trimmed = input.trim();
@@ -234,6 +224,10 @@ export default function ChatScreen() {
           renderItem={renderMessage}
           contentContainerStyle={styles.messagesList}
           showsVerticalScrollIndicator={false}
+          inverted
+          maintainVisibleContentPosition={{
+            minIndexForVisible: 0,
+          }}
         />
 
         <View style={[styles.inputBar, { paddingBottom: Math.max(insets.bottom, 10) }]}>
@@ -254,6 +248,8 @@ export default function ChatScreen() {
     </SafeAreaView>
   );
 }
+
+const ORANGE = '#F58A07';
 
 const styles = StyleSheet.create({
   safe: {
@@ -322,11 +318,11 @@ const styles = StyleSheet.create({
     paddingBottom: 8,
   },
   myMessageBubble: {
-    backgroundColor: '#1677FF',
+    backgroundColor: ORANGE,
     borderBottomRightRadius: 6,
   },
   otherMessageBubble: {
-    backgroundColor: '#F1F3F4',
+    backgroundColor: '#FFF1E3',
     borderBottomLeftRadius: 6,
   },
   messageText: {
@@ -376,7 +372,7 @@ const styles = StyleSheet.create({
     width: 44,
     height: 44,
     borderRadius: 22,
-    backgroundColor: '#1677FF',
+    backgroundColor: ORANGE,
     alignItems: 'center',
     justifyContent: 'center',
   },
