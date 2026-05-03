@@ -18,6 +18,7 @@ import {
   writeBatch,
 } from 'firebase/firestore';
 import { auth, db } from './firebaseConfig';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 interface UserProfile {
   username: string;
@@ -62,7 +63,10 @@ export const signIn = (email: string, password: string): Promise<UserCredential>
 export const resetPassword = (email: string): Promise<void> =>
   sendPasswordResetEmail(auth, email);
 
-export const logOut = (): Promise<void> => signOut(auth);
+export const logOut = async (): Promise<void> => {
+  await signOut(auth);
+  await AsyncStorage.removeItem('user_logged_in');
+};
 
 export const isFieldTaken = async (fieldName: string, value: string, currentUid: string) => {
   const usersRef = collection(db, "users");
