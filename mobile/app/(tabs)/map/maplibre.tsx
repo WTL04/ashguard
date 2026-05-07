@@ -419,10 +419,19 @@ export default function MapLibre() {
     setSelectedFireId(null);
     setSelectedWeatherId(null);
     setSelectedSavedPlaceId(null);
-    setSheetOpen(false);
     setResourcesError(null);
     setResourcesLoading(false);
-    setIsResourcesMode(false);
+    // Only collapse the sheet / clear resources mode when we are NOT on a filter
+    // that should keep the resource sheet visible ('resources' or 'all').
+    // Using a functional updater reads the latest activeFilter without a stale closure.
+    setActiveFilter((currentFilter) => {
+      const keepSheet = currentFilter === 'resources' || currentFilter === 'all';
+      if (!keepSheet) {
+        setSheetOpen(false);
+        setIsResourcesMode(false);
+      }
+      return currentFilter; // don't change the filter
+    });
   };
 
   const focusCameraOnCoordinate = (
@@ -706,7 +715,7 @@ export default function MapLibre() {
           setNearbyPlaces(wave1Places);
           // Only open the sheet if the user explicitly activated Resources mode
           // (not on background/initial load)
-          if (isResourcesMode && !searchSheetOpen) setSheetOpen(true);
+          if ((isResourcesMode || activeFilter === 'all') && !searchSheetOpen) setSheetOpen(true);
 
           const secondaryResults = await Promise.all(secondaryPromises);
           const allPlaces = mergePlaces([wave1Places, ...secondaryResults]);
@@ -724,7 +733,7 @@ export default function MapLibre() {
           setNearbyPlaces(
             extractHospitalsFromGeoJSON(hospitalCollection, stableSearchCoords)
           );
-          if (isResourcesMode && !searchSheetOpen) setSheetOpen(true);
+          if ((isResourcesMode || activeFilter === 'all') && !searchSheetOpen) setSheetOpen(true);
           return;
         }
 
@@ -737,7 +746,7 @@ export default function MapLibre() {
 
         setResourcesData(data);
         setNearbyPlaces(extractGeoapifyPlacesFromGeoJSON(data, stableSearchCoords));
-        if (isResourcesMode && !searchSheetOpen) setSheetOpen(true);
+        if ((isResourcesMode || activeFilter === 'all') && !searchSheetOpen) setSheetOpen(true);
       } catch (err) {
         console.error('Failed to fetch nearby resources:', err);
         setResourcesError('Failed to load nearby resources');
@@ -981,10 +990,14 @@ export default function MapLibre() {
 
   /** Opens the search sheet and collapses the resource sheet while searching */
   const openSearchSheet = () => {
-    // Remember whether the resource sheet was open so we can restore it on close
-    resourceSheetWasOpenRef.current = sheetOpen;
-    // Collapse resource sheet so both sheets are never visible simultaneously
-    setSheetOpen(false);
+    // Only snapshot the resource sheet state on first open, not on re-focus
+    if (!searchSheetOpen) {
+      resourceSheetWasOpenRef.current = sheetOpen;
+      setSheetOpen(false);
+    }
+    // Clear any previously selected chip/pin so the sheet returns to search mode
+    setSearchSelectedChipId(null);
+    setSelectedSearchPin(null);
     setSearchSheetOpen(true);
   };
 
@@ -1007,7 +1020,6 @@ export default function MapLibre() {
     // Drop a search pin on the map
     setSelectedSearchPin({ coordinate: coord, label: suggestion.shortLabel });
     focusCameraOnCoordinate(coord, 14);
-    resourceSheetWasOpenRef.current = false;
   };
 
   const handleSelectSavedPlaceFromSearch = (location: {
@@ -1018,12 +1030,14 @@ export default function MapLibre() {
     isHome?: boolean;
   }) => {
     clearSelections();
+    // Clear the search bar so typing again triggers the search function
+    setSearch('');
+    clearSearch();
     // Drop a search pin so the map shows a marker
     setSearchSelectedChipId(location.id);
     setSelectedSearchPin({ coordinate: location.coordinate, label: location.label });
     focusCameraOnCoordinate(location.coordinate, 15);
     // Keep the search sheet open so the selected card (with Get Directions) is visible
-    resourceSheetWasOpenRef.current = false;
   };
 
   const handleSearchClose = () => {
@@ -1035,13 +1049,14 @@ export default function MapLibre() {
     setSearch('');
     setSelectedSearchPin(null);
     setSelectedSavedPlaceId(null);
-    setSearchSelectedChipId(null); 
+    setSearchSelectedChipId(null);
 
-    // Restore resource sheet if it was open before search was triggered
-    if (resourceSheetWasOpenRef.current) {
+    // Restore resource sheet if it was open before search, OR if the active
+    // filter is one that always shows the resource sheet (all / resources)
+    if (resourceSheetWasOpenRef.current || activeFilter === 'all' || activeFilter === 'resources') {
       setSheetOpen(true);
-      resourceSheetWasOpenRef.current = false;
     }
+    resourceSheetWasOpenRef.current = false;
   };
 
   // ── Derived / memoized values ───────────────────────────────────────────────
