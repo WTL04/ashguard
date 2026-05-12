@@ -6,23 +6,19 @@ import {
   TouchableOpacity,
   TextInput,
   FlatList,
+  Image,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import { collection, getDocs, doc, getDoc } from 'firebase/firestore';
-import { auth, db } from '@/lib/firebaseConfig';
-import { getOrCreateChat } from '@/lib/services/chatService';
+import {
+  fetchUsers,
+  fetchCurrentUser,
+  createOrGetChat,
+} from '@/lib/services/messageApi';
 
-const GROUP_MEMBERS_KEY = 'emergency_group_members';
-
-type SavedContact = {
-  id: string;
-  name: string;
-  phoneNumber?: string;
-};
+// ─── Types ────────────────────────────────────────────────────────────────────
 
 type AppUser = {
   uid: string;
@@ -36,82 +32,38 @@ type AppUser = {
 const normalizePhone = (phone?: string) => {
   if (!phone) return '';
   const digits = phone.replace(/\D/g, '');
-  return digits.length === 11 && digits.startsWith('1')
-    ? digits.slice(1)
-    : digits;
+  return digits.length === 11 && digits.startsWith('1') ? digits.slice(1) : digits;
 };
+
+// ─── Screen ───────────────────────────────────────────────────────────────────
 
 export default function NewMessageScreen() {
   const insets = useSafeAreaInsets();
 
   const [search, setSearch] = useState('');
   const [matchedUsers, setMatchedUsers] = useState<AppUser[]>([]);
-  const [currentUserProfile, setCurrentUserProfile] = useState<AppUser | null>(null);
+  const [currentUserUid, setCurrentUserUid] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    loadUsersForMessaging();
-    loadCurrentUserProfile();
+    loadData();
   }, []);
 
-  const loadCurrentUserProfile = async () => {
+  const loadData = async () => {
     try {
-      const currentUid = auth.currentUser?.uid;
-      if (!currentUid) return;
-
-      const currentUserRef = doc(db, 'users', currentUid);
-      const currentUserSnap = await getDoc(currentUserRef);
-
-      if (currentUserSnap.exists()) {
-        setCurrentUserProfile(currentUserSnap.data() as AppUser);
-      }
-    } catch (error) {
-      console.log('Error loading current user profile:', error);
-    }
-  };
-
-  const loadUsersForMessaging = async () => {
-    try {
-      const snapshot = await getDocs(collection(db, 'users'));
-      const allUsers = snapshot.docs.map((doc) => doc.data() as AppUser);
-
-      // TEMPORARY EMULATOR VERSION:
-      // Show all Firestore users directly, including self for testing.
-      const allowedUsers = allUsers.filter((user) => !!user.uid);
-
-      setMatchedUsers(allowedUsers);
-
-      /*
-      ORIGINAL CONTACT-MATCHING VERSION (KEEP FOR REAL DEVICE USE LATER)
-
-      const currentUid = auth.currentUser?.uid;
-
-      const contactsRaw = await AsyncStorage.getItem(GROUP_MEMBERS_KEY);
-      const savedContacts: SavedContact[] = contactsRaw ? JSON.parse(contactsRaw) : [];
-
-      const contactPhoneSet = new Set(
-        savedContacts
-          .map((contact) => normalizePhone(contact.phoneNumber))
-          .filter(Boolean)
-      );
-
-      const allowedUsers = allUsers.filter((user) => {
-        const normalizedUserPhone = normalizePhone(user.phone);
-        const isSelf = user.uid === currentUid;
-        const isInSavedContacts = contactPhoneSet.has(normalizedUserPhone);
-
-        return isSelf || isInSavedContacts;
-      });
-
-      setMatchedUsers(allowedUsers);
-      */
+      // Both calls hit the backend — no direct Firestore reads
+      const [me, users] = await Promise.all([fetchCurrentUser(), fetchUsers()]);
+      setCurrentUserUid(me.uid);
+      setMatchedUsers(users.filter((u: AppUser) => !!u.uid));
     } catch (error) {
       console.log('Error loading users for messaging:', error);
+    } finally {
+      setLoading(false);
     }
   };
 
   const filteredUsers = useMemo(() => {
     const q = search.trim().toLowerCase();
-
     if (!q) return matchedUsers;
 
     return matchedUsers.filter((user) => {
@@ -128,51 +80,43 @@ export default function NewMessageScreen() {
     });
   }, [matchedUsers, search]);
 
+  const handleUserPress = async (item: AppUser) => {
+    try {
+      // POST /api/v1/chats — backend creates or returns existing chat
+      // and sets up participantDetails + unreadCounts correctly
+      const chatId = await createOrGetChat(item.uid);
+
+      router.replace({
+        pathname: '/(tabs)/groups/chat',
+        params: {
+          chatId,
+          name: `${item.firstName} ${item.lastName}`,
+        },
+      });
+    } catch (error) {
+      console.log('Error creating/opening chat:', error);
+    }
+  };
+
   const renderUser = ({ item }: { item: AppUser }) => {
-    const isSelf = item.uid === auth.currentUser?.uid;
+    const isSelf = item.uid === currentUserUid;
 
     return (
-      <TouchableOpacity
-        style={styles.contactRow}
-        onPress={async () => {
-          if (!auth.currentUser || !currentUserProfile) return;
-
-          const currentUser = {
-            uid: currentUserProfile.uid,
-            firstName: currentUserProfile.firstName,
-            lastName: currentUserProfile.lastName,
-            username: currentUserProfile.username || '',
-            photoURL: currentUserProfile.photoURL || '',
-          };
-
-          const otherUser = item;
-
-          try {
-            const chatId = await getOrCreateChat(currentUser, otherUser);
-
-            router.replace({
-              pathname: '/(tabs)/groups/chat',
-              params: {
-                chatId,
-                name: `${item.firstName} ${item.lastName}`,
-              },
-            });
-          } catch (error) {
-            console.log('Error creating/opening chat:', error);
-          }
-        }}
-      >
+      <TouchableOpacity style={styles.contactRow} onPress={() => handleUserPress(item)}>
         <View style={styles.contactLeft}>
-          <View style={styles.avatarFallback}>
-            <Ionicons name="person" size={16} color="#888" />
-          </View>
+          {item.photoURL ? (
+            <Image source={{ uri: item.photoURL }} style={styles.avatarImage} />
+          ) : (
+            <View style={styles.avatarFallback}>
+              <Ionicons name="person" size={16} color="#888" />
+            </View>
+          )}
 
           <View>
             <Text style={styles.contactName}>
               {item.firstName} {item.lastName}
               {isSelf ? ' (You)' : ''}
             </Text>
-
             <Text style={styles.contactSubtext}>
               {item.phone || item.username || ''}
             </Text>
@@ -210,13 +154,16 @@ export default function NewMessageScreen() {
               />
             </View>
 
-            {filteredUsers.length === 0 ? (
+            {loading ? (
+              <View style={styles.emptyState}>
+                <Ionicons name="hourglass-outline" size={52} color="#C9C9C9" />
+                <Text style={styles.emptyTitle}>Loading...</Text>
+              </View>
+            ) : filteredUsers.length === 0 ? (
               <View style={styles.emptyState}>
                 <Ionicons name="create-outline" size={52} color="#C9C9C9" />
                 <Text style={styles.emptyTitle}>No contacts yet</Text>
-                <Text style={styles.emptySubtitle}>
-                  Your contacts will appear here
-                </Text>
+                <Text style={styles.emptySubtitle}>Your contacts will appear here</Text>
               </View>
             ) : (
               <FlatList
@@ -233,14 +180,11 @@ export default function NewMessageScreen() {
   );
 }
 
+// ─── Styles ───────────────────────────────────────────────────────────────────
+
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#F3F3F3',
-  },
-  screen: {
-    flex: 1,
-  },
+  container: { flex: 1, backgroundColor: '#F3F3F3' },
+  screen: { flex: 1 },
   header: {
     backgroundColor: '#F58500',
     flexDirection: 'row',
@@ -248,20 +192,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingBottom: 20,
   },
-  headerTitleWrap: {
-    flex: 1,
-    alignItems: 'center',
-    marginRight: 26,
-  },
-  headerTitle: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#fff',
-  },
-  content: {
-    flex: 1,
-    padding: 16,
-  },
+  headerTitleWrap: { flex: 1, alignItems: 'center', marginRight: 26 },
+  headerTitle: { fontSize: 16, fontWeight: '700', color: '#fff' },
+  content: { flex: 1, padding: 16 },
   searchBar: {
     height: 42,
     borderRadius: 22,
@@ -271,24 +204,14 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     marginBottom: 12,
   },
-  searchInput: {
-    flex: 1,
-    marginLeft: 6,
-    fontSize: 14,
-    color: '#111',
-  },
+  searchInput: { flex: 1, marginLeft: 6, fontSize: 14, color: '#111' },
   emptyState: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
     paddingBottom: 80,
   },
-  emptyTitle: {
-    fontSize: 18,
-    fontWeight: '800',
-    color: '#111',
-    marginTop: 12,
-  },
+  emptyTitle: { fontSize: 18, fontWeight: '800', color: '#111', marginTop: 12 },
   emptySubtitle: {
     fontSize: 14,
     color: '#8A8A8A',
@@ -302,10 +225,7 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     marginBottom: 10,
   },
-  contactLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
+  contactLeft: { flexDirection: 'row', alignItems: 'center' },
   avatarFallback: {
     width: 34,
     height: 34,
@@ -315,14 +235,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  contactName: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#111',
-  },
-  contactSubtext: {
-    fontSize: 13,
-    color: '#666',
-    marginTop: 2,
-  },
+  avatarImage: { width: 34, height: 34, borderRadius: 17, marginRight: 10 },
+  contactName: { fontSize: 15, fontWeight: '700', color: '#111' },
+  contactSubtext: { fontSize: 13, color: '#666', marginTop: 2 },
 });

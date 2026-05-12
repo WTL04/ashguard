@@ -1,5 +1,5 @@
 """
-incidents.py
+calfire_incidents.py
 ------------
 Fetches active California wildfire incidents from the CalFire JSON API
 and upserts them into Firestore as pinned official notices.
@@ -27,11 +27,13 @@ logger = logging.getLogger(__name__)
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-CALFIRE_API_URL = "https://incidents.fire.ca.gov/umbraco/api/IncidentApi/List?inactive=false"
-SYNC_INTERVAL   = 900   # seconds — sync every 15 minutes
-AUTHOR_NAME     = "CAL FIRE"
-AVATAR_COLOR    = "#B45309"
-STALE_DAYS      = 3     # delete calfire docs not updated in this many days
+CALFIRE_API_URL = (
+    "https://incidents.fire.ca.gov/umbraco/api/IncidentApi/List?inactive=false"
+)
+SYNC_INTERVAL = 900  # seconds — sync every 15 minutes
+AUTHOR_NAME = "CAL FIRE"
+AVATAR_COLOR = "#B45309"
+STALE_DAYS = 3  # delete calfire docs not updated in this many days
 
 
 # ── Firestore client (lazy singleton) ─────────────────────────────────────────
@@ -71,6 +73,7 @@ def get_db() -> firestore.AsyncClient:
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+
 def _stable_doc_id(title: str) -> str:
     """
     Derives a stable Firestore document ID from the incident title so the
@@ -82,6 +85,7 @@ def _stable_doc_id(title: str) -> str:
 
 
 # ── JSON Parsing ──────────────────────────────────────────────────────────────
+
 
 def _parse_calfire_json(data: list) -> list[dict]:
     """
@@ -126,19 +130,22 @@ def _parse_calfire_json(data: list) -> list[dict]:
                 except ValueError:
                     pass
 
-        incidents.append({
-            "title":      name,
-            "body":       body,
-            "link":       f"https://www.fire.ca.gov{url}" if url else "",
-            "updated_at": updated_at,
-            "doc_id":     _stable_doc_id(name),
-        })
+        incidents.append(
+            {
+                "title": name,
+                "body": body,
+                "link": f"https://www.fire.ca.gov{url}" if url else "",
+                "updated_at": updated_at,
+                "doc_id": _stable_doc_id(name),
+            }
+        )
 
     logger.info(f"CalFire API: parsed {len(incidents)} active incidents")
     return incidents
 
 
 # ── Firestore Upsert ──────────────────────────────────────────────────────────
+
 
 async def _upsert_incident(db: firestore.AsyncClient, incident: dict) -> None:
     """
@@ -153,37 +160,44 @@ async def _upsert_incident(db: firestore.AsyncClient, incident: dict) -> None:
     now_ts = firestore.SERVER_TIMESTAMP
 
     if not snap.exists:
-        await ref.set({
-            "type":           "official",
-            "pinned":         True,
-            "title":          incident["title"],
-            "body":           incident["body"],
-            "tags":           [],
-            "distance":       "—",
-            "authorId":       "calfire_official",
-            "authorUsername": AUTHOR_NAME,
-            "avatarColor":    AVATAR_COLOR,
-            "address":        "",
-            "sourceUrl":      incident["link"],
-            "createdAt":      now_ts,
-            "updatedAt":      now_ts,
-        })
+        await ref.set(
+            {
+                "type": "official",
+                "pinned": True,
+                "title": incident["title"],
+                "body": incident["body"],
+                "tags": [],
+                "distance": "—",
+                "authorId": "calfire_official",
+                "authorUsername": AUTHOR_NAME,
+                "avatarColor": AVATAR_COLOR,
+                "address": "",
+                "sourceUrl": incident["link"],
+                "createdAt": now_ts,
+                "updatedAt": now_ts,
+            }
+        )
         logger.info(f"Firestore: created incident '{incident['title']}'")
     else:
         existing = snap.to_dict()
-        if (existing.get("title") != incident["title"] or
-                existing.get("body") != incident["body"]):
-            await ref.update({
-                "title":     incident["title"],
-                "body":      incident["body"],
-                "updatedAt": now_ts,
-            })
+        if (
+            existing.get("title") != incident["title"]
+            or existing.get("body") != incident["body"]
+        ):
+            await ref.update(
+                {
+                    "title": incident["title"],
+                    "body": incident["body"],
+                    "updatedAt": now_ts,
+                }
+            )
             logger.info(f"Firestore: updated incident '{incident['title']}'")
         else:
             logger.debug(f"Firestore: no change for '{incident['title']}', skipping")
 
 
 # ── Cleanup ───────────────────────────────────────────────────────────────────
+
 
 async def _cleanup_resolved_incidents(
     db: firestore.AsyncClient,
@@ -231,7 +245,9 @@ async def _cleanup_resolved_incidents(
                 updated_at = updated_at.replace(tzinfo=timezone.utc)
             if updated_at < stale_cutoff:
                 await doc.reference.delete()
-                logger.info(f"Firestore: deleted stale incident '{title}' (last updated {updated_at.date()})")
+                logger.info(
+                    f"Firestore: deleted stale incident '{title}' (last updated {updated_at.date()})"
+                )
                 deleted += 1
                 continue
 
@@ -239,6 +255,7 @@ async def _cleanup_resolved_incidents(
 
 
 # ── Sync ──────────────────────────────────────────────────────────────────────
+
 
 async def sync_calfire_incidents() -> int:
     """
@@ -277,7 +294,9 @@ async def sync_calfire_incidents() -> int:
     if incidents:
         await asyncio.gather(*[_upsert_incident(db, inc) for inc in incidents])
     else:
-        logger.info("CalFire API: no active incidents — skipping upsert, running cleanup only")
+        logger.info(
+            "CalFire API: no active incidents — skipping upsert, running cleanup only"
+        )
 
     # Always clean up — empty active_ids deletes all calfire_ docs in Firestore
     active_ids = {inc["doc_id"] for inc in incidents}
@@ -287,6 +306,7 @@ async def sync_calfire_incidents() -> int:
 
 
 # ── Background Worker ─────────────────────────────────────────────────────────
+
 
 async def incidents_sync_worker() -> None:
     """
@@ -305,3 +325,4 @@ async def incidents_sync_worker() -> None:
             logger.error(f"CalFire sync worker error: {e}")
 
         await asyncio.sleep(SYNC_INTERVAL)
+
