@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -14,18 +14,14 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { StatusBar } from 'expo-status-bar';
 import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, router } from 'expo-router';
-import {
-  collection,
-  addDoc,
-  onSnapshot,
-  query,
-  orderBy,
-  serverTimestamp,
-  updateDoc,
-  doc,
-  getDoc,
-} from 'firebase/firestore';
+import { doc, getDoc } from 'firebase/firestore';
 import { db, auth } from '@/lib/firebaseConfig';
+import {
+  fetchMessageHistory,
+  sendMessage,
+  connectWebSocket,
+  markChatAsRead,
+} from '@/lib/services/messageApi';
 
 type Message = {
   id: string;
@@ -35,11 +31,16 @@ type Message = {
 };
 
 function formatChatTimestamp(timestamp: any) {
-  if (!timestamp?.toDate) return '';
+  if (!timestamp) return '';
 
-  const date = timestamp.toDate();
+  if (timestamp?.toDate) {
+    return timestamp.toDate().toLocaleTimeString([], {
+      hour: 'numeric',
+      minute: '2-digit',
+    });
+  }
 
-  return date.toLocaleTimeString([], {
+  return new Date(timestamp).toLocaleTimeString([], {
     hour: 'numeric',
     minute: '2-digit',
   });
@@ -53,103 +54,91 @@ export default function ChatScreen() {
   const [input, setInput] = useState('');
   const [chatPhoto, setChatPhoto] = useState('');
   const flatListRef = useRef<FlatList<Message>>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+  const currentUid = auth.currentUser?.uid ?? null;
+
+  const scrollToBottom = useCallback((animated = true) => {
+    requestAnimationFrame(() => {
+      flatListRef.current?.scrollToOffset({
+        offset: 0,
+        animated,
+      });
+    });
+  }, []);
+
+  const syncReadState = useCallback(async () => {
+    if (!chatId) return;
+
+    try {
+      await markChatAsRead(String(chatId));
+    } catch (err) {
+      console.log('Failed to mark chat as read:', err);
+    }
+  }, [chatId]);
 
   useEffect(() => {
     if (!chatId) return;
 
-    const q = query(
-      collection(db, 'chats', String(chatId), 'messages'),
-      orderBy('createdAt', 'asc')
-    );
+    let mounted = true;
 
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const msgs = snapshot.docs.map((doc) => ({
-        id: doc.id,
-        ...doc.data(),
-      })) as Message[];
+    fetchMessageHistory(String(chatId))
+      .then(async (msgs) => {
+        if (!mounted) return;
+        setMessages([...msgs].reverse());
+        scrollToBottom(false);
+        await syncReadState();
+      })
+      .catch((err) => console.log('History load failed:', err));
 
-      setMessages(msgs);
+    connectWebSocket(
+      String(chatId),
+      async (message) => {
+        if (!mounted) return;
+
+        setMessages((prev) => [message, ...prev]);
+        scrollToBottom();
+
+        if (message.senderId !== currentUid) {
+          await syncReadState();
+        }
+      },
+      () => console.log('WebSocket closed'),
+    ).then((ws) => {
+      if (!mounted) {
+        ws.close();
+        return;
+      }
+      wsRef.current = ws;
     });
 
-    return unsubscribe;
-  }, [chatId]);
-
-  useEffect(() => {
-    if (messages.length === 0) return;
-
-    const timer = setTimeout(() => {
-      flatListRef.current?.scrollToEnd({ animated: true });
-    }, 100);
-
-    return () => clearTimeout(timer);
-  }, [messages]);
-
-  // ✅ FIX: Clear unread whenever messages change while chat is open
-  useEffect(() => {
-    const clearUnreadForCurrentUser = async () => {
-      const currentUid = auth.currentUser?.uid;
-      if (!chatId || !currentUid) return;
-
-      try {
-        await updateDoc(doc(db, 'chats', String(chatId)), {
-          [`unreadCounts.${currentUid}`]: 0,
-        });
-      } catch (error) {
-        console.log('Error clearing unread count:', error);
-      }
+    return () => {
+      mounted = false;
+      wsRef.current?.close();
+      wsRef.current = null;
     };
+  }, [chatId, currentUid, scrollToBottom, syncReadState]);
 
+  useEffect(() => {
     if (messages.length > 0) {
-      clearUnreadForCurrentUser();
+      scrollToBottom();
     }
-  }, [chatId, messages]);
+  }, [messages.length, scrollToBottom]);
 
-  const sendMessage = async () => {
+  const handleSend = async () => {
     const trimmed = input.trim();
-    const currentUid = auth.currentUser?.uid;
-
-    if (!trimmed || !chatId || !currentUid) return;
+    if (!trimmed || !chatId) return;
 
     try {
-      const chatRef = doc(db, 'chats', String(chatId));
-      const chatSnap = await getDoc(chatRef);
-
-      if (!chatSnap.exists()) return;
-
-      const chatData = chatSnap.data();
-      const participants: string[] = chatData.participants || [];
-
-      const otherParticipantIds = participants.filter((uid) => uid !== currentUid);
-
-      const unreadCounts = { ...(chatData.unreadCounts || {}) };
-
-      otherParticipantIds.forEach((uid) => {
-        unreadCounts[uid] = (unreadCounts[uid] || 0) + 1;
-      });
-
-      unreadCounts[currentUid] = 0;
-
-      await addDoc(collection(db, 'chats', String(chatId), 'messages'), {
-        text: trimmed,
-        senderId: currentUid,
-        createdAt: serverTimestamp(),
-      });
-
-      await updateDoc(chatRef, {
-        lastMessage: trimmed,
-        lastMessageAt: serverTimestamp(),
-        lastMessageSenderId: currentUid,
-        unreadCounts,
-      });
-
+      await sendMessage(String(chatId), trimmed);
       setInput('');
-    } catch (error) {
-      console.log('Error sending message:', error);
+      scrollToBottom();
+    } catch (err) {
+      console.log('Send failed:', err);
     }
   };
 
   const renderMessage = ({ item }: { item: Message }) => {
-    const isMine = item.senderId === auth.currentUser?.uid;
+    const isMine = item.senderId === currentUid;
     const timeText = formatChatTimestamp(item.createdAt);
 
     return (
@@ -191,8 +180,8 @@ export default function ChatScreen() {
 
   useEffect(() => {
     const loadChatHeader = async () => {
-      const currentUid = auth.currentUser?.uid;
-      if (!chatId || !currentUid) return;
+      const uid = auth.currentUser?.uid;
+      if (!chatId || !uid) return;
 
       try {
         const chatRef = doc(db, 'chats', String(chatId));
@@ -204,12 +193,12 @@ export default function ChatScreen() {
         const participantDetails = chatData.participantDetails || {};
         const entries = Object.entries(participantDetails) as [string, any][];
 
-        const otherUserEntry = entries.find(([uid]) => uid !== currentUid);
-        const otherUser = otherUserEntry ? otherUserEntry[1] : null;
+        const otherUserEntry = entries.find(([userId]) => userId !== uid);
+        const otherUser = otherUserEntry ? otherUserEntry[1] : participantDetails[uid];
 
         setChatPhoto(otherUser?.photoURL || '');
-      } catch (error) {
-        console.log('Error loading chat header:', error);
+      } catch (err) {
+        console.log('Failed to load chat header:', err);
       }
     };
 
@@ -217,156 +206,191 @@ export default function ChatScreen() {
   }, [chatId]);
 
   return (
-    <>
-      <StatusBar style="light" backgroundColor="#F58500" />
+    <SafeAreaView style={styles.safe} edges={['top', 'left', 'right']}>
+      <StatusBar style="dark" />
+      <KeyboardAvoidingView
+        style={styles.flex}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        keyboardVerticalOffset={insets.top + 10}
+      >
+        <View style={styles.header}>
+          <TouchableOpacity onPress={() => router.back()} style={styles.headerIcon}>
+            <Ionicons name="chevron-back" size={26} color="#111" />
+          </TouchableOpacity>
 
-      <SafeAreaView style={styles.container} edges={['bottom']}>
-        <KeyboardAvoidingView
-          style={styles.screen}
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        >
-          <View style={[styles.header, { paddingTop: insets.top + 10 }]}>
-            <TouchableOpacity
-              onPress={() => router.dismissTo('/(tabs)/groups')}
-              style={styles.backButton}
-            >
-              <Ionicons name="chevron-back" size={26} color="#fff" />
-            </TouchableOpacity>
-
-            <View style={styles.headerCenter}>
+          <View style={styles.headerCenter}>
+            {chatPhoto ? (
+              <Image source={{ uri: chatPhoto }} style={styles.headerAvatar} />
+            ) : (
               <View style={styles.headerAvatar}>
-                {chatPhoto ? (
-                  <Image source={{ uri: chatPhoto }} style={styles.headerAvatarImage} />
-                ) : (
-                  <Ionicons name="person" size={22} color="#F58500" />
-                )}
-              </View>   
+                <Ionicons name="person" size={20} color="#888" />
+              </View>
+            )}
 
-              <Text style={styles.headerTitle} numberOfLines={1}>
-                {name || 'Chat'}
-              </Text>
-            </View>
-
-            <View style={styles.headerRightSpacer} />
+            <Text style={styles.headerTitle} numberOfLines={1}>
+              {name || 'Chat'}
+            </Text>
           </View>
 
-          <FlatList
-            ref={flatListRef}
-            data={messages}
-            keyExtractor={(item) => item.id}
-            renderItem={renderMessage}
-            contentContainerStyle={styles.messagesList}
-            showsVerticalScrollIndicator={false}
-            onContentSizeChange={() =>
-              flatListRef.current?.scrollToEnd({ animated: true })
-            }
+          <View style={styles.headerIcon} />
+        </View>
+
+        <FlatList
+          ref={flatListRef}
+          data={messages}
+          keyExtractor={(item) => item.id}
+          renderItem={renderMessage}
+          contentContainerStyle={styles.messagesList}
+          showsVerticalScrollIndicator={false}
+          inverted
+          keyboardShouldPersistTaps="handled"
+          onContentSizeChange={() => scrollToBottom(false)}
+        />
+
+        <View style={[styles.inputBar, { paddingBottom: Math.max(insets.bottom, 10) }]}>
+          <TextInput
+            style={styles.input}
+            placeholder="Type a message..."
+            placeholderTextColor="#9AA0A6"
+            value={input}
+            onChangeText={setInput}
+            multiline
           />
 
-          <View style={styles.inputWrap}>
-            <View style={styles.inputBar}>
-              <TextInput
-                value={input}
-                onChangeText={setInput}
-                placeholder="Message"
-                placeholderTextColor="#C08A45"
-                style={styles.input}
-              />
-
-              <TouchableOpacity onPress={sendMessage} style={styles.sendButton}>
-                <Ionicons name="send-outline" size={24} color="#444" />
-              </TouchableOpacity>
-            </View>
-          </View>
-        </KeyboardAvoidingView>
-      </SafeAreaView>
-    </>
+          <TouchableOpacity style={styles.sendButton} onPress={handleSend}>
+            <Ionicons name="send" size={18} color="#fff" />
+          </TouchableOpacity>
+        </View>
+      </KeyboardAvoidingView>
+    </SafeAreaView>
   );
 }
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#EDEDED' },
-  screen: { flex: 1 },
+const ORANGE = '#F58A07';
 
+const styles = StyleSheet.create({
+  safe: {
+    flex: 1,
+    backgroundColor: '#fff',
+  },
+  flex: {
+    flex: 1,
+    backgroundColor: '#fff',
+  },
   header: {
-    backgroundColor: '#F58500',
+    height: 64,
+    paddingHorizontal: 14,
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingBottom: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F0F0F0',
+    backgroundColor: '#fff',
   },
-  backButton: { width: 32 },
-  headerCenter: { flex: 1, alignItems: 'center' },
-  headerAvatar: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: '#FFD27A',
+  headerIcon: {
+    width: 36,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 4,
-    overflow: 'hidden',
   },
-  headerAvatarImage: {
-    width: '100%',
-    height: '100%',
-    borderRadius: 20,
+  headerCenter: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginHorizontal: 8,
   },
-  headerTitle: { color: '#fff', fontSize: 16, fontWeight: '700' },
-  headerRightSpacer: { width: 32 },
-
+  headerAvatar: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    marginRight: 10,
+    backgroundColor: '#F1F3F4',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  headerTitle: {
+    flex: 1,
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#111',
+  },
   messagesList: {
     paddingHorizontal: 14,
-    paddingTop: 18,
-    paddingBottom: 10,
+    paddingTop: 12,
+    paddingBottom: 12,
   },
-
-  messageRow: { marginBottom: 12, flexDirection: 'row' },
-  messageRowLeft: { justifyContent: 'flex-start' },
-  messageRowRight: { justifyContent: 'flex-end' },
-
+  messageRow: {
+    marginBottom: 10,
+    flexDirection: 'row',
+  },
+  messageRowLeft: {
+    justifyContent: 'flex-start',
+  },
+  messageRowRight: {
+    justifyContent: 'flex-end',
+  },
   messageBubble: {
-    maxWidth: '72%',
-    borderRadius: 14,
+    maxWidth: '78%',
+    borderRadius: 18,
     paddingHorizontal: 12,
     paddingTop: 10,
     paddingBottom: 8,
   },
   myMessageBubble: {
-    backgroundColor: '#F58500',
+    backgroundColor: ORANGE,
     borderBottomRightRadius: 6,
   },
   otherMessageBubble: {
-    backgroundColor: '#F7D8A7',
+    backgroundColor: '#FFF1E3',
     borderBottomLeftRadius: 6,
   },
-
-  messageText: { fontSize: 14 },
-  myMessageText: { color: '#fff' },
-  otherMessageText: { color: '#A85A00' },
-
-  messageTime: {
-    fontSize: 11,
-    marginTop: 6,
-    alignSelf: 'flex-end',
+  messageText: {
+    fontSize: 15,
+    lineHeight: 20,
   },
-  myMessageTime: { color: 'rgba(255,255,255,0.8)' },
-  otherMessageTime: { color: '#A85A00', opacity: 0.75 },
-
-  inputWrap: {
-    paddingHorizontal: 10,
-    paddingTop: 6,
-    paddingBottom: 8,
-    backgroundColor: '#EDEDED',
+  myMessageText: {
+    color: '#fff',
+  },
+  otherMessageText: {
+    color: '#111',
+  },
+  messageTime: {
+    marginTop: 4,
+    fontSize: 11,
+  },
+  myMessageTime: {
+    color: 'rgba(255,255,255,0.85)',
+    textAlign: 'right',
+  },
+  otherMessageTime: {
+    color: '#777',
   },
   inputBar: {
-    minHeight: 52,
-    borderRadius: 14,
-    backgroundColor: '#F7D8A7',
     flexDirection: 'row',
-    alignItems: 'center',
-    paddingLeft: 14,
-    paddingRight: 10,
+    alignItems: 'flex-end',
+    paddingHorizontal: 12,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: '#F0F0F0',
+    backgroundColor: '#fff',
   },
-  input: { flex: 1, fontSize: 14, color: '#8C4B00' },
-  sendButton: { marginLeft: 8 },
+  input: {
+    flex: 1,
+    minHeight: 44,
+    maxHeight: 120,
+    backgroundColor: '#F5F6F7',
+    borderRadius: 22,
+    paddingHorizontal: 14,
+    paddingTop: 12,
+    paddingBottom: 12,
+    fontSize: 15,
+    color: '#111',
+    marginRight: 8,
+  },
+  sendButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: ORANGE,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
 });

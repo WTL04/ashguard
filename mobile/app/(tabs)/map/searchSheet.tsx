@@ -175,8 +175,16 @@ useEffect(() => {
   }, [visible]);
 
 
+  // Clear the selected card only when the user *starts* typing (isTyping flips to true).
+  // We must NOT clear it when typing stops (isTyping → false) because that is exactly
+  // what happens when a saved-place chip is tapped: the parent clears the search bar,
+  // isTyping drops to false, and we'd immediately wipe the card we just set.
+  const prevIsTypingRef = useRef(false);
   useEffect(() => {
-    if (selectedItem) {
+    const wasTyping = prevIsTypingRef.current;
+    prevIsTypingRef.current = isTyping;
+
+    if (isTyping && !wasTyping && selectedItem) {
       setSelectedItem(null);
     }
   }, [isTyping]);
@@ -356,16 +364,20 @@ useEffect(() => {
             keyboardShouldPersistTaps="handled"
           >
             {savedLocations.map((loc) => {
-              const isSelected = selectedItem?.isSaved
+              // Chip is highlighted when explicitly selected — even if there's text in
+              // the search bar (isTyping). Only suppress the "nothing-selected" state
+              // while typing (so unrelated chips don't look active mid-search).
+              const isSelected = !isTyping && (selectedItem?.isSaved
                 ? selectedItem.title === loc.label
-                : selectedSavedPlaceId === loc.id;
+                : selectedSavedPlaceId === loc.id);
+              // Chips only highlight when explicitly tapped — never while typing
+              const showHighlight = isSelected;
               return (
                 <TouchableOpacity
                   key={loc.id}
                   style={[
                     styles.savedChip,
-                    isSelected && styles.savedChipSelected,
-                    loc.isHome && !isSelected && styles.savedChipHome,
+                    isSelected && (loc.isHome ? styles.savedChipHome : styles.savedChipSelected),
                   ]}
                   onPress={() => handleSavedPlaceTap(loc)}
                   activeOpacity={0.82}
@@ -373,13 +385,13 @@ useEffect(() => {
                   <Ionicons
                     name={loc.icon}
                     size={13}
-                    color={isSelected || loc.isHome ? '#FFFFFF' : '#4B5563'}
+                    color={showHighlight ? '#FFFFFF' : '#4B5563'}
                     style={{ marginRight: 6 }}
                   />
                   <Text
                     style={[
                       styles.savedChipText,
-                      (isSelected || loc.isHome) && styles.savedChipTextLight,
+                      showHighlight && styles.savedChipTextLight,
                     ]}
                     numberOfLines={1}
                   >

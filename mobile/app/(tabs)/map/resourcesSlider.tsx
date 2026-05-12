@@ -131,6 +131,7 @@ export default function ResourceBottomSheet({
     } else if (isResourcesFilterActive) {
       bottomSheetRef.current?.snapToIndex(2);
     } else {
+      // 'all' filter — show collapsed peek
       bottomSheetRef.current?.snapToIndex(0);
     }
   }, [visible, peekOnly, selectedPlace, isResourcesFilterActive]);
@@ -138,7 +139,7 @@ export default function ResourceBottomSheet({
   return (
     <BottomSheet
       ref={bottomSheetRef}
-      index={0}
+      index={-1}
       snapPoints={snapPoints}
       enablePanDownToClose={false}
       enableContentPanningGesture={false}

@@ -14,6 +14,9 @@ import { StatusBar } from 'expo-status-bar';
 import { Ionicons } from '@expo/vector-icons';
 import { router, useFocusEffect } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { doc, updateDoc } from 'firebase/firestore';
+import { getAuth } from 'firebase/auth';
+import { db } from '@/lib/firebaseConfig';
 
 type SafetyStatus = 'SAFE' | 'NEED HELP!' | 'IN DANGER';
 
@@ -82,7 +85,17 @@ export default function EmergencyGroupScreen() {
 
   const saveSafetyStatus = async (status: SafetyStatus) => {
     try {
+      // Save locally
       await AsyncStorage.setItem(SAFETY_STATUS_KEY, status);
+
+      // Sync to Firestore so group members can see live status
+      const auth = getAuth();
+      const uid = auth.currentUser?.uid;
+      if (uid) {
+        await updateDoc(doc(db, 'users', uid), {
+          safetyStatus: status,
+        });
+      }
     } catch (error) {
       console.log('Error saving safety status:', error);
     }
@@ -105,10 +118,6 @@ export default function EmergencyGroupScreen() {
     await saveSafetyStatus(status);
   };
 
-  // Opens the device's default map app with directions to the meetup location.
-  // On iOS: tries Apple Maps via maps.apple.com (works in all iOS apps).
-  // On Android: uses a geo: intent which the OS routes to whatever maps app
-  // the user has set as default (Google Maps, Waze, etc.).
   const handleNavigate = () => {
     if (!meetupCoords && !meetupAddress) {
       Alert.alert('No meetup location', 'Set a meetup location first.');
@@ -122,14 +131,11 @@ export default function EmergencyGroupScreen() {
       const label = encodeURIComponent(meetupAddress || 'Emergency Meetup');
 
       if (Platform.OS === 'ios') {
-        // Apple Maps deeplink — works on all iOS devices without any app installed
         url = `maps://maps.apple.com/?daddr=${latitude},${longitude}&q=${label}`;
       } else {
-        // geo: intent — Android routes this to the user's default maps app
         url = `geo:${latitude},${longitude}?q=${latitude},${longitude}(${label})`;
       }
     } else {
-      // Fallback: just search by address text
       const encoded = encodeURIComponent(meetupAddress);
       if (Platform.OS === 'ios') {
         url = `maps://maps.apple.com/?q=${encoded}`;
@@ -143,7 +149,6 @@ export default function EmergencyGroupScreen() {
         if (supported) {
           return Linking.openURL(url);
         }
-        // Fallback to Google Maps web if the native scheme isn't supported
         const fallback = meetupCoords
           ? `https://www.google.com/maps/dir/?api=1&destination=${meetupCoords.latitude},${meetupCoords.longitude}`
           : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(meetupAddress)}`;
@@ -260,7 +265,6 @@ export default function EmergencyGroupScreen() {
 
               {meetupAddress ? (
                 <View style={styles.meetupContent}>
-                  {/* Address row */}
                   <View style={styles.meetupSavedRow}>
                     <Text style={styles.meetupSavedText} numberOfLines={1}>
                       {meetupAddress}
@@ -268,7 +272,6 @@ export default function EmergencyGroupScreen() {
                     <Ionicons name="create-outline" size={18} color="#F58500" />
                   </View>
 
-                  {/* Navigate button */}
                   <TouchableOpacity
                     style={styles.navigateButton}
                     activeOpacity={0.85}
@@ -460,23 +463,22 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     textAlign: 'center',
   },
-  // Navigate button — solid orange, full width, pill shape
   navigateButton: {
-  flexDirection: 'row',
-  alignItems: 'center',
-  justifyContent: 'center',
-  backgroundColor: '#F58500',
-  borderRadius: 24,
-  paddingVertical: 10,
-  paddingHorizontal: 32,
-  alignSelf: 'center',
-},
-navigateButtonText: {
-  color: '#fff',
-  fontWeight: '800',
-  fontSize: 14,
-  letterSpacing: 0.5,
-},
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#F58500',
+    borderRadius: 24,
+    paddingVertical: 10,
+    paddingHorizontal: 32,
+    alignSelf: 'center',
+  },
+  navigateButtonText: {
+    color: '#fff',
+    fontWeight: '800',
+    fontSize: 14,
+    letterSpacing: 0.5,
+  },
   checkInBody: {
     paddingHorizontal: 16,
     paddingTop: 16,
